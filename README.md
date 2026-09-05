@@ -206,22 +206,3 @@ turn **Remove Alerts** off.
 This feed is read-only and refreshes on iOS's own slow schedule. ntfy is what
 actually gets reminders to you on time; the subscription is for glancing at the
 month.
-
-## Known limits
-
-- **Events load a year either side of the year on screen.** Paging between
-  months never waits on the network, but search only covers that window.
-- **Recurring events are not expanded** — there's no RRULE storage, so an
-  import only ever lands one occurrence. A yearly rule (birthdays,
-  anniversaries) is rolled forward to its next upcoming date instead of the
-  literal, often long-past, DTSTART; anything else (weekly, monthly, ...)
-  keeps its literal first occurrence. Both cases are labelled in the import
-  checklist. Re-import annually to pick up each year's next occurrence.
-- **Import assumes Stockholm time** for events written with a `TZID` other than
-  `Europe/Stockholm`. Those are flagged in the checklist. UTC (`Z`) times convert
-  correctly.
-- **The pattern is low-entropy** — roughly 15,000 possible five-dot patterns.
-  Login throttling (5 tries, then a 15 minute lockout per IP) is what makes it
-  safe, not the pattern itself. Do not remove it.
-- **The feed token is a bearer credential.** Anyone with the URL can read the
-  calendar. Rotate `FEED_TOKEN` if it leaks.
