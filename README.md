@@ -204,5 +204,4 @@ Then Settings → Apps → Calendar → Accounts → Subscribed Calendars → pi
 turn **Remove Alerts** off.
 
 This feed is read-only and refreshes on iOS's own slow schedule. ntfy is what
-actually gets reminders to you on time; the subscription is for glancing at the
-month.
+actually gets reminders to you on time. 
