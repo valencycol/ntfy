@@ -1,0 +1,38 @@
+name = "events-colaco"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+# Attach the custom domain. Cloudflare issues the cert automatically.
+routes = [
+  { pattern = "events.colaco.se", custom_domain = true }
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "events"
+database_id = "53074797-82d1-43ba-a14a-6ba5941d5d53"
+
+# Reminder scheduler. One minute is the finest granularity Cron Triggers allow.
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+TZ_NAME = "Europe/Stockholm"
+# Self-hosted ntfy (Render + UptimeRobot; see README section 4). No
+# trailing slash. Remove this line to fall back to the public ntfy.sh.
+NTFY_SERVER = "https://ntfy-sjbg.onrender.com"
+
+# The frontend is a Next.js static export (see webapp/). Assets are matched
+# first; anything that isn't a file — /api/*, the .ics feed — falls through to
+# the Worker. Build it with `npm run build:web` before deploying.
+[assets]
+directory = "./webapp/out"
+binding = "ASSETS"
+not_found_handling = "404-page"
+
+# Secrets are NOT set here. Use `wrangler secret put NAME`:
+#   PATTERN_HASH   sha256(pattern + ":" + AUTH_PEPPER)
+#   AUTH_PEPPER    long random string
+#   SESSION_SECRET long random string
+#   NTFY_TOPIC     your random ntfy topic name
+#   FEED_TOKEN     random token for the read-only .ics feed URL

@@ -1,0 +1,15 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+
+# Filenames are content-hashed, so these can be cached hard.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Revalidate the shells so a redeploy is picked up immediately.
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache

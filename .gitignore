@@ -1,0 +1,35 @@
+# Secrets — never commit these. Production values live as Cloudflare secrets.
+.dev.vars
+.env
+.env.*
+!tests/test.env
+
+# Local Wrangler state (D1 databases, caches) and the test database
+.wrangler/
+
+# Build output — .next alone reaches ~700 MB, and workerd binaries inside
+# node_modules are past GitHub's 100 MB per-file limit.
+webapp/.next/
+webapp/out/
+webapp/.turbo/
+webapp/.vercel/
+coverage/
+webapp/next-env.d.ts
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# Playwright
+tests/.results/
+playwright-report/
+test-results/
+
+# Certificates and local overrides
+*.pem
+*.local
+
+# macOS
+.DS_Store
+
+backups

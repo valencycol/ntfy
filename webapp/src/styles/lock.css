@@ -1,0 +1,147 @@
+/* The allie lock screen: a fine gold lattice over a deep emerald vignette, with
+   a bright translucent glass panel floating on it. The app chrome's zinc theme
+   deliberately stops here — this screen keeps its own emerald/gold mood. */
+.lock {
+  --gold: #a87c2c;
+  --gold-line: #d4af5f;
+  /* The unfilled rings sit on the pale glass card, where #a87c2c manages only
+     1.96:1 — under the 3:1 WCAG wants for a control outline. This darker
+     bronze reaches 4.2:1 while the fill and trail stay gold. */
+  --gold-ring: #6b4a12;
+  --emerald-deep: #0b3b2e;
+  --rose: #b8395a;
+  --display: ui-serif, Georgia, "Times New Roman", serif;
+
+  min-height: 100dvh;
+  display: grid;
+  place-content: center;
+  padding: 2rem 1.5rem;
+  text-align: center;
+  background:
+    repeating-linear-gradient(45deg, rgba(212, 175, 95, 0.08) 0 1px, transparent 1px 24px),
+    repeating-linear-gradient(-45deg, rgba(212, 175, 95, 0.08) 0 1px, transparent 1px 24px),
+    radial-gradient(ellipse at 50% 30%, #17614a 0%, var(--emerald-deep) 62%, #04211a 100%);
+  color: var(--emerald-deep);
+}
+
+.lockcard {
+  position: relative;
+  isolation: isolate;
+  width: min(25rem, 100%);
+  padding: 2.75rem 2rem;
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.64);
+  backdrop-filter: blur(22px) saturate(160%) brightness(1.1);
+  -webkit-backdrop-filter: blur(22px) saturate(160%) brightness(1.1);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow:
+    0 24px 60px rgba(3, 26, 20, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.lockcard::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 35%);
+}
+
+.lockmark {
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: var(--gold);
+  display: grid;
+  place-items: center;
+}
+.lockmark svg {
+  width: 24px;
+  height: 24px;
+}
+
+.lock h1 {
+  font: 400 clamp(1.6rem, 7vw, 2.4rem) / 1 var(--display);
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: var(--emerald-deep);
+}
+
+.locksub {
+  color: rgba(11, 59, 46, 0.85);
+  font-size: 0.8125rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: -12px 0 0;
+}
+
+.padwrap {
+  position: relative;
+  touch-action: none;
+}
+
+.trail {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: stroke 0.2s ease;
+}
+.lock.wrong .trail polyline {
+  stroke: var(--rose);
+}
+
+.pad {
+  display: grid;
+  grid-template-columns: repeat(3, 72px);
+  grid-template-rows: repeat(3, 72px);
+  gap: 0;
+}
+
+.dot {
+  background: none;
+  border: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+.dot::after {
+  content: "";
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  border: 1.5px solid var(--gold-ring);
+  background: none;
+  transition:
+    transform 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.26s ease;
+}
+
+.dot[aria-pressed="true"]::after {
+  background: var(--gold);
+  transform: scale(1.15);
+  box-shadow: 0 0 0 11px rgba(212, 175, 95, 0.3);
+}
+
+.lock.wrong .dot[aria-pressed="true"]::after {
+  background: var(--rose);
+  border-color: var(--rose);
+}
+
+.lockmsg {
+  min-height: 1.5em;
+  font-size: 0.875rem;
+  color: var(--rose);
+  text-align: center;
+  margin: 0;
+  font-weight: 500;
+}
