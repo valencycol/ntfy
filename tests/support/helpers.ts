@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { expect } from "@playwright/test";
 
-import { NTFY_STUB_URL, TEST_PATTERN, TEST_SUPERUSER_PHRASE } from "../../playwright.config";
+import { NTFY_STUB_URL, TEST_PATTERN, TEST_SUPERUSER_PHRASE, TEST_TZ } from "../../playwright.config";
 
 import type { APIRequestContext, Page } from "@playwright/test";
 
@@ -139,8 +139,23 @@ export async function resetViaApi(admin: APIRequestContext) {
  */
 export async function addReminderViaApi(api: APIRequestContext, title: string, minutesFromNow: number) {
   const at = new Date(Date.now() + minutesFromNow * 60_000);
-  const today = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
-  const clock = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+
+  // Read the wall clock in the Worker's timezone, not the runner's: the
+  // Worker turns "2026-09-05" + "14:30" into an instant using TZ_NAME, so a
+  // runner on UTC would arm the reminder hours away from when it meant to.
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TEST_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(at);
+  const part = (type: string) => parts.find(p => p.type === type)!.value;
+
+  const today = `${part("year")}-${part("month")}-${part("day")}`;
+  const clock = `${part("hour")}:${part("minute")}`;
 
   const source = FIXTURE_EVENTS.find(e => e.title === title)!;
   const response = await api.patch(`/api/events/${fixtureId(title)}`, {

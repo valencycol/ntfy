@@ -15,6 +15,13 @@ export const TEST_SUPERUSER_PHRASE = "open-sesame-test-only";
 /** Mirrors MAX_FAILS in src/index.js; production is not overridden. */
 export const MAX_FAILS_BEFORE_LOCKOUT = 5;
 
+/**
+ * The Worker's TZ_NAME. Tests must not assume the machine running them shares
+ * it — a CI box on UTC computed reminder times two hours adrift, so the cron
+ * found nothing due.
+ */
+export const TEST_TZ = "Europe/Stockholm";
+
 export default defineConfig({
   testDir: "./tests",
   outputDir: "./tests/.results",
@@ -38,6 +45,7 @@ export default defineConfig({
 
   use: {
     baseURL: BASE_URL,
+    timezoneId: TEST_TZ,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",
