@@ -95,6 +95,71 @@ test.describe("week highlight", () => {
     await expect(page.locator('[data-toast]').filter({ hasText: /highlight cleared/ })).toBeVisible();
   });
 
+  test("changing the year clears the highlight and its button", async ({ page }) => {
+    await unlock(page);
+
+    await page.fill("#jump-week", "44");
+    await page.keyboard.press("Enter");
+    expect(await page.locator("[data-week-highlight]").count()).toBeGreaterThan(0);
+    await expect(page.getByRole("button", { name: /Clear the week 44/ })).toBeVisible();
+
+    await page.fill("#jump-year", "2029");
+    await page.keyboard.press("Enter");
+
+    // The outline is off screen, so the button that clears it must go too.
+    await expect(page.locator("[data-week-highlight]")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Clear the week/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Go to this week" })).toBeVisible();
+  });
+
+  test("changing the month clears it too", async ({ page }) => {
+    await unlock(page);
+
+    await page.fill("#jump-week", "44");
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("button", { name: /Clear the week 44/ })).toBeVisible();
+
+    await page.locator("#jump-month").click();
+    await page.getByRole("option", { name: "February" }).click();
+
+    await expect(page.locator("[data-week-highlight]")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Clear the week/ })).toHaveCount(0);
+  });
+
+  test("Today clears it as well", async ({ page }) => {
+    await unlock(page);
+
+    await page.fill("#jump-week", "44");
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("button", { name: /Clear the week 44/ })).toBeVisible();
+
+    await page.getByRole("button", { name: "Today", exact: true }).click();
+    await expect(page.getByRole("button", { name: /Clear the week/ })).toHaveCount(0);
+  });
+
+  test("the arrows clear it when they page away", async ({ page }) => {
+    await unlock(page);
+
+    await page.fill("#jump-week", "44");
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("button", { name: /Clear the week 44/ })).toBeVisible();
+
+    await page.getByRole("button", { name: "Next period" }).click();
+    await expect(page.getByRole("button", { name: /Clear the week/ })).toHaveCount(0);
+  });
+
+  test("re-entering the same week keeps it highlighted", async ({ page }) => {
+    await unlock(page);
+
+    await page.fill("#jump-week", "44");
+    await page.keyboard.press("Enter");
+    await page.fill("#jump-week", "44");
+    await page.keyboard.press("Enter");
+
+    expect(await page.locator("[data-week-highlight]").count()).toBeGreaterThan(0);
+    await expect(page.getByRole("button", { name: /Clear the week 44/ })).toBeVisible();
+  });
+
   test("no clear button is shown when no week is highlighted", async ({ page }) => {
     await unlock(page);
     await expect(page.getByRole("button", { name: /Clear the week/ })).toHaveCount(0);

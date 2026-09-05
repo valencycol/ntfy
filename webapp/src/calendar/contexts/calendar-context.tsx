@@ -2,6 +2,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
+import { getISOWeek, getISOWeekYear } from "date-fns";
+
 import { api, ApiError, fetchEvents } from "@/lib/api";
 
 import type { Dispatch, SetStateAction } from "react";
@@ -143,6 +145,15 @@ export function CalendarProvider({ children, onSessionExpired }: { children: Rea
 
   const handleSelectDate = (date: Date | undefined) => {
     if (!date) return;
+
+    // A highlighted week only means anything while it is on screen. Navigating
+    // elsewhere — the year or month boxes, Today, the arrows, a search result —
+    // used to leave the outline invisible but its Clear button still showing.
+    // Handled here so every route through the calendar behaves the same.
+    if (highlightedWeek && (getISOWeek(date) !== highlightedWeek.week || getISOWeekYear(date) !== highlightedWeek.year)) {
+      setHighlightedWeek(null);
+    }
+
     setSelectedDate(date);
   };
 
