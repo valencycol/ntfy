@@ -231,7 +231,7 @@ test.describe("menu dialogs on a phone", () => {
     await unlock(page);
     await openMenu(page, "Notifications");
 
-    const box = page.getByPlaceholder("Send a message to ntfy…");
+    const box = page.getByPlaceholder("Send a message to your phone…");
     await box.fill("Sent from the phone");
     await box.press("Enter");
     await expect(page.getByText("Sent.")).toBeVisible();

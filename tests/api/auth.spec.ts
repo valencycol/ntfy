@@ -36,7 +36,7 @@ test.describe("authentication", () => {
   });
 
   test("every data endpoint is gated behind a session", async ({ request }) => {
-    const gated: [string, "get" | "post" | "patch" | "delete"][] = [
+    const gated: [string, "get" | "post" | "put" | "patch" | "delete"][] = [
       ["/api/events?from=2026-01-01&to=2026-12-31", "get"],
       ["/api/events", "post"],
       ["/api/events/11111111-1111-4111-8111-111111111111", "patch"],
@@ -47,6 +47,10 @@ test.describe("authentication", () => {
       ["/api/ntfy-info", "get"],
       ["/api/upcoming", "get"],
       ["/api/notify", "post"],
+      ["/api/notify-settings", "get"],
+      ["/api/notify-settings", "put"],
+      ["/api/telegram/discover", "post"],
+      ["/api/telegram/test", "post"],
     ];
 
     for (const [path, method] of gated) {

@@ -2,6 +2,10 @@ import { defineConfig, devices } from "@playwright/test";
 
 export const BASE_URL = "http://127.0.0.1:8788";
 export const NTFY_STUB_URL = "http://127.0.0.1:8799";
+export const TELEGRAM_STUB_URL = "http://127.0.0.1:8800";
+
+/** Matches the identity tests/support/telegram-stub.mjs reports from getMe. */
+export const TEST_BOT_USERNAME = "events_test_bot";
 
 /** The pattern tests/test.env's PATTERN_HASH corresponds to. Draws a "7". */
 export const TEST_PATTERN = [0, 1, 2, 4, 7];
@@ -82,6 +86,12 @@ export default defineConfig({
       stdout: "pipe",
     },
     {
+      command: "node tests/support/telegram-stub.mjs",
+      url: `${TELEGRAM_STUB_URL}/__messages`,
+      reuseExistingServer: false,
+      stdout: "pipe",
+    },
+    {
       // Isolated from `npm run dev`: its own port, its own D1 persistence
       // directory, and throwaway secrets, so a test run never touches the
       // developer's local data or the real ntfy server.
@@ -92,6 +102,7 @@ export default defineConfig({
         "--persist-to .wrangler/test-state",
         "--env-file tests/test.env",
         `--var NTFY_SERVER:${NTFY_STUB_URL}`,
+        `--var TELEGRAM_API_BASE:${TELEGRAM_STUB_URL}`,
         "--var TZ_NAME:Europe/Stockholm",
       ].join(" "),
       url: BASE_URL,

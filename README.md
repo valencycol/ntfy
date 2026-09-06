@@ -1,13 +1,14 @@
 # events.colaco.se
 
 A private calendar on Cloudflare Workers + D1. Pattern lock, colour-coded single
-and multi-day events, ICS import with a per-event checklist, ntfy push to
-iPhone, and a read-only .ics feed you can subscribe to in iOS Calendar.
+and multi-day events, ICS import with a per-event checklist, reminders pushed to
+your phone over **ntfy**, **Telegram** or both, and a read-only .ics feed you can
+subscribe to in iOS Calendar.
 
 ## Layout
 
-- `src/index.js` — the Worker: `/api/*`, the `.ics` feed, and the cron that
-  fires reminders. It no longer serves any HTML.
+- `src/index.js` — the Worker: `/api/*`, the `.ics` feed, the ntfy and Telegram
+  clients, and the cron that fires reminders. It no longer serves any HTML.
 - `webapp/` — the frontend, a Next.js app built on
   [big-calendar](https://github.com/lramos33/big-calendar). `next build`
   static-exports it to `webapp/out`, which the Worker serves as static assets.
@@ -56,6 +57,9 @@ npx wrangler secret put SESSION_SECRET
 npx wrangler secret put FEED_TOKEN
 npx wrangler secret put NTFY_TOPIC
 ```
+
+`TELEGRAM_BOT_TOKEN` is the one other secret, and it is optional — see
+[section 5](#5-telegram-on-the-iphone-optional).
 
 To change the pattern later, re-run the `printf | sha256sum` line with the new
 digit sequence and the same pepper, then `wrangler secret put PATTERN_HASH`.
@@ -197,7 +201,80 @@ self-hosted URL (see above; it's not sensitive, no secret needed).
    above — Settings → Notifications → ntfy → Sounds, and any Focus mode
    exception).
 
-## 5. Subscribe in iOS Calendar (optional, for seeing the calendar)
+## 5. Telegram on the iPhone (optional)
+
+A second reminder channel, alongside ntfy or instead of it. It needs no server
+of your own and has no message quota, which makes it a good backup for the
+times the Render ntfy instance is cold-starting or asleep.
+
+Unlike the task app's bot, this one only ever **speaks**: nothing in the
+calendar is resolved from a notification, so there is no webhook to register,
+no public callback URL, and no `TELEGRAM_WEBHOOK_SECRET`.
+
+### 1. Create the bot
+
+In Telegram, open **@BotFather** → `/newbot`. Give it a display name and a
+username ending in `bot`. It replies with a token.
+
+### 2. Set the token and deploy
+
+```bash
+npx wrangler secret put TELEGRAM_BOT_TOKEN   # from BotFather
+npm run deploy
+```
+
+The `settings` table this feature stores its channel choice in is new, so a
+database created before it needs the schema re-run once — it is all
+`CREATE TABLE IF NOT EXISTS`, so this is safe on an existing database and
+touches no rows:
+
+```bash
+npx wrangler d1 execute events --remote --file=./schema.sql
+```
+
+### 3. Link your chat
+
+A Telegram bot **cannot message you first**, so it has to hear from you once:
+
+1. Open a chat with your new bot and tap **Start**.
+2. In the calendar, open the menu → **iPhone setup** → *Reminders via Telegram*.
+   The section names the bot the token belongs to, which is the quickest way to
+   confirm the secret is set correctly.
+3. Tap **Find my chat**. It asks the bot who has messaged it and fills in your
+   chat ID.
+4. Tap **Send test** and confirm the message arrives. This works regardless of
+   which channel is currently selected — test Telegram *before* trusting it.
+5. Set **Send reminders to** and press **Save**.
+
+To reach a group instead, add the bot to the group, send a message there, and
+**Find my chat** will offer it too. A channel works as `@channelname`, with the
+bot added as an administrator.
+
+### Choosing a channel
+
+| Setting | Behaviour |
+| --- | --- |
+| **ntfy only** | The default, and what every existing install keeps. |
+| **Telegram only** | ntfy is not contacted at all. |
+| **Both** | Sent to both; delivered as soon as **either** accepts it. |
+
+"Both" deliberately succeeds on one arrival. A reminder that reached your phone
+has done its job, and failing the whole delivery because the second channel was
+down would only schedule a retry that re-sends on the channel that worked.
+
+The choice lives in D1 rather than in `wrangler.toml`, so you can switch
+channels from the phone when one of them is having a bad day — no deploy, no
+`wrangler` on hand. Only the bot token is a secret; the chat ID is not one (it
+identifies a chat but does not grant access to it), so it is stored as an
+ordinary setting and is editable in the dialog.
+
+If the bot ever stops delivering, the reason Telegram gave is kept per reminder
+in `reminders.last_error` and shown in the notifications panel as a failed
+attempt count.
+
+---
+
+## 6. Subscribe in iOS Calendar (optional, for seeing the calendar)
 
 In the app, tap **Subscribe on iPhone** and open the `webcal://` link it shows.
 Then Settings → Apps → Calendar → Accounts → Subscribed Calendars → pick it →

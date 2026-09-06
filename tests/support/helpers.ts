@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { expect } from "@playwright/test";
 
-import { NTFY_STUB_URL, TEST_PATTERN, TEST_SUPERUSER_PHRASE, TEST_TZ } from "../../playwright.config";
+import { NTFY_STUB_URL, TELEGRAM_STUB_URL, TEST_PATTERN, TEST_SUPERUSER_PHRASE, TEST_TZ } from "../../playwright.config";
 
 import type { APIRequestContext, Page } from "@playwright/test";
 
@@ -190,6 +190,54 @@ export async function clearStub(request: APIRequestContext) {
 
 export async function stubFailNext(request: APIRequestContext, count = 1) {
   await request.post(`${NTFY_STUB_URL}/__fail`, { data: { count } });
+}
+
+// ---------------------------------------------------------------------------
+// Telegram stub
+
+export interface IStubTelegramMessage {
+  at: number;
+  chat_id: string;
+  text: string;
+}
+
+export interface IStubChat {
+  id: number | string;
+  type: string;
+  first_name?: string;
+  title?: string;
+  username?: string;
+}
+
+export async function telegramMessages(request: APIRequestContext): Promise<IStubTelegramMessage[]> {
+  const response = await request.get(`${TELEGRAM_STUB_URL}/__messages`);
+  expect(response.ok()).toBeTruthy();
+  return (await response.json()).messages;
+}
+
+/** Also clears the seeded getUpdates chats and any pending failure. */
+export async function clearTelegramStub(request: APIRequestContext) {
+  await request.delete(`${TELEGRAM_STUB_URL}/__messages`);
+}
+
+/** Seeds the chats the bot's getUpdates will report, as if they had messaged it. */
+export async function seedTelegramChats(request: APIRequestContext, chats: IStubChat[]) {
+  await request.post(`${TELEGRAM_STUB_URL}/__updates`, { data: { chats } });
+}
+
+export async function telegramFailNext(request: APIRequestContext, count = 1) {
+  await request.post(`${TELEGRAM_STUB_URL}/__fail`, { data: { count } });
+}
+
+/**
+ * Puts the notification channel back to ntfy-only. Every spec that touches
+ * the setting must call this afterwards: it is stored in D1, so leaving it on
+ * Telegram would silently redirect every later spec's pushes away from the
+ * ntfy stub they assert against.
+ */
+export async function resetNotifyChannel(request: APIRequestContext) {
+  const response = await request.put("/api/notify-settings", { data: { channel: "ntfy", telegram_chat_id: "" } });
+  expect(response.status(), `could not reset the notify channel: ${await response.text()}`).toBe(200);
 }
 
 // ---------------------------------------------------------------------------

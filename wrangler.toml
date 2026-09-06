@@ -36,3 +36,7 @@ not_found_handling = "404-page"
 #   SESSION_SECRET long random string
 #   NTFY_TOPIC     your random ntfy topic name
 #   FEED_TOKEN     random token for the read-only .ics feed URL
+#
+# Optional, for the Telegram reminder channel (README section 5). The chat it
+# sends to is a `settings` row, not a secret, and is set from the app:
+#   TELEGRAM_BOT_TOKEN   the token @BotFather gives you

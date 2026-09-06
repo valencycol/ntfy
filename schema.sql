@@ -46,3 +46,12 @@ CREATE TABLE IF NOT EXISTS reminders (
 
 CREATE INDEX IF NOT EXISTS idx_reminders_notify ON reminders(notify_at) WHERE notified_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_reminders_event  ON reminders(event_id);
+
+-- App settings that are a *choice* rather than a credential, so they belong in
+-- the database and can be changed from the UI instead of needing a deploy.
+-- Currently: `notify_channel` ('ntfy' | 'telegram' | 'both') and
+-- `telegram_chat_id`. The bot token stays a Cloudflare secret.
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

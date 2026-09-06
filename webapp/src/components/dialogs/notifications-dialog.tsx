@@ -89,12 +89,12 @@ export function NotificationsDialog({ open, onOpenChange }: { open: boolean; onO
       <DialogContent className="flex max-h-[90dvh] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Notifications</DialogTitle>
-          <DialogDescription>Reminders due for a push in the next 48 hours. Send one now, or cancel it.</DialogDescription>
+          <DialogDescription>Reminders due for a push in the next 48 hours. Send one now, or cancel it. Delivery follows the channel set in iPhone setup.</DialogDescription>
         </DialogHeader>
 
         <div className="flex items-center gap-2">
           <Input
-            placeholder="Send a message to ntfy…"
+            placeholder="Send a message to your phone…"
             value={message}
             onChange={e => setMessage(e.target.value)}
             onKeyDown={e => {

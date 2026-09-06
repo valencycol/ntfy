@@ -292,6 +292,106 @@ async function pushNtfy(env, body) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Telegram. A second delivery channel alongside ntfy, using the Bot API
+// directly — no webhook, because this bot only ever speaks and never listens
+// (nothing in the calendar is resolved from a notification).
+// ---------------------------------------------------------------------------
+
+// Telegram's HTML parse mode only reserves these three.
+function tgEscape(value) {
+  return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Overridable so the test suite can point the client at a stub, exactly as
+// NTFY_SERVER does for ntfy. Production never sets it.
+function telegramApiBase(env) {
+  return (env.TELEGRAM_API_BASE || "https://api.telegram.org").replace(/\/+$/, "");
+}
+
+// Returns {ok, result} / {ok:false, reason} rather than throwing: a Telegram
+// outage must not take down the endpoint that called it, and the reason is
+// what ends up in reminders.last_error.
+async function telegramCall(env, method, payload = {}) {
+  const token = env.TELEGRAM_BOT_TOKEN || "";
+  if (!token) return { ok: false, reason: "TELEGRAM_BOT_TOKEN is not set." };
+  if (token !== token.trim()) return { ok: false, reason: "TELEGRAM_BOT_TOKEN has stray leading/trailing whitespace." };
+  try {
+    const res = await fetch(`${telegramApiBase(env)}/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.ok) return { ok: true, result: data.result };
+    const why = String(data?.description || `HTTP ${res.status}`).slice(0, 200);
+    return { ok: false, reason: `Telegram ${method} failed: ${why}` };
+  } catch (err) {
+    return { ok: false, reason: `Telegram ${method} failed: ${err?.message || err}` };
+  }
+}
+
+async function pushTelegram(env, chatId, title, body) {
+  if (!chatId) return { ok: false, reason: "No Telegram chat is linked yet." };
+  return telegramCall(env, "sendMessage", {
+    chat_id: chatId,
+    text: `<b>${tgEscape(title)}</b>\n${tgEscape(body)}`,
+    parse_mode: "HTML",
+    link_preview_options: { is_disabled: true },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Which channel(s) a reminder goes to. This is a preference rather than a
+// credential, so it lives in the database and is switchable from the app —
+// the point being that when one channel is having a bad day (a sleeping
+// self-hosted ntfy, a revoked bot token) reminders can be moved to the other
+// without a deploy.
+// ---------------------------------------------------------------------------
+
+const NOTIFY_CHANNELS = ["ntfy", "telegram", "both"];
+const DEFAULT_SETTINGS = { notify_channel: "ntfy", telegram_chat_id: "" };
+
+async function getSettings(env) {
+  try {
+    const { results } = await env.DB.prepare(`SELECT key, value FROM settings`).all();
+    return { ...DEFAULT_SETTINGS, ...Object.fromEntries(results.map((r) => [r.key, r.value])) };
+  } catch {
+    // `settings` is newer than the rest of the schema and migrations are not
+    // applied on deploy, so a database that has not had schema.sql re-run yet
+    // keeps delivering to ntfy instead of failing every single reminder.
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+// Sends one reminder to every configured channel. `settings` is passed in by
+// the cron so a batch of due reminders costs one settings read, not fifty.
+async function deliverPush(env, body, settings) {
+  const s = settings || (await getSettings(env));
+  const channel = NOTIFY_CHANNELS.includes(s.notify_channel) ? s.notify_channel : "ntfy";
+
+  // Fired in parallel: on "both" the cron would otherwise pay two round trips
+  // per reminder, and it works through up to fifty of them in one tick.
+  const sending = [];
+  if (channel === "ntfy" || channel === "both") {
+    sending.push(pushNtfy(env, body).then((r) => ({ name: "ntfy", ...r })));
+  }
+  if (channel === "telegram" || channel === "both") {
+    sending.push(pushTelegram(env, s.telegram_chat_id, "Coming up", body).then((r) => ({ name: "telegram", ...r })));
+  }
+  const attempts = await Promise.all(sending);
+
+  // On "both", one arrival is success. A reminder that reached the phone has
+  // done its job, and failing the delivery because the second channel is down
+  // would only schedule a retry that re-sends on the channel that worked.
+  if (attempts.some((a) => a.ok)) return { ok: true };
+  return {
+    ok: false,
+    reason: attempts.map((a) => `${a.name}: ${a.reason}`).join("; ") || "No delivery channel is configured.",
+  };
+}
+
 // One reminders-table row per configured time, targeting `occurrenceDate` —
 // the event's own date for a one-off event, or its next occurrence for a
 // repeat_yearly one (see nextYearlyOccurrence).
@@ -778,6 +878,98 @@ export default {
       });
     }
 
+    // -----------------------------------------------------------------------
+    // Notification channel settings, and linking the Telegram chat.
+    // -----------------------------------------------------------------------
+
+    if (path === "/api/notify-settings" && request.method === "GET") {
+      const s = await getSettings(env);
+      // getMe both proves the token works and gives the @username to show, so
+      // "is Telegram actually set up?" is answered by Telegram, not by guessing
+      // from whether a secret happens to be non-empty.
+      const me = env.TELEGRAM_BOT_TOKEN ? await telegramCall(env, "getMe") : { ok: false, reason: "TELEGRAM_BOT_TOKEN is not set." };
+      return json({
+        channel: NOTIFY_CHANNELS.includes(s.notify_channel) ? s.notify_channel : "ntfy",
+        telegram: {
+          tokenSet: Boolean(env.TELEGRAM_BOT_TOKEN),
+          chatId: s.telegram_chat_id,
+          bot: me.ok ? me.result?.username || null : null,
+          error: me.ok ? null : me.reason,
+        },
+      });
+    }
+
+    if (path === "/api/notify-settings" && request.method === "PUT") {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "Malformed request." }, 400);
+      }
+
+      const channel = clean(body.channel, 20);
+      if (!NOTIFY_CHANNELS.includes(channel)) {
+        return json({ error: "Channel must be ntfy, telegram or both." }, 400);
+      }
+
+      // Numeric for a private chat or group, @name for a channel. Anything
+      // else is a typo, and a typo here silently stops reminders arriving.
+      const chatId = clean(body.telegram_chat_id, 64) || "";
+      if (chatId && !/^-?\d{1,20}$/.test(chatId) && !/^@[A-Za-z0-9_]{4,32}$/.test(chatId)) {
+        return json({ error: "Chat ID must be a number, or @name for a channel." }, 400);
+      }
+
+      // Refuse to arm a channel that cannot deliver. Saving this and finding
+      // out at 07:00 that the reminder went nowhere is the failure worth
+      // designing against.
+      if (channel !== "ntfy") {
+        if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "Set the TELEGRAM_BOT_TOKEN secret first." }, 400);
+        if (!chatId) return json({ error: "Link a Telegram chat first." }, 400);
+      }
+
+      await env.DB.batch([
+        env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('notify_channel', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(channel),
+        env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('telegram_chat_id', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(chatId),
+      ]);
+
+      return json({ ok: true, channel, telegram_chat_id: chatId });
+    }
+
+    // A bot cannot message someone first, so the chat ID can only be learned
+    // after the user has sent the bot something. getUpdates is enough for
+    // that and needs no webhook, no public callback URL and no secret token —
+    // the whole registration dance the task app needs is unnecessary here.
+    if (path === "/api/telegram/discover" && request.method === "POST") {
+      const updates = await telegramCall(env, "getUpdates", { limit: 100, allowed_updates: ["message"] });
+      if (!updates.ok) return json({ error: updates.reason }, 502);
+
+      const chats = new Map();
+      for (const update of updates.result || []) {
+        const chat = update.message?.chat || update.my_chat_member?.chat;
+        if (!chat) continue;
+        const name = chat.title || [chat.first_name, chat.last_name].filter(Boolean).join(" ") || chat.username || String(chat.id);
+        chats.set(String(chat.id), { id: String(chat.id), name, type: chat.type });
+      }
+      return json({ chats: [...chats.values()] });
+    }
+
+    // Proves the bot can actually reach the chat, before it is trusted with a
+    // real reminder. Deliberately independent of the selected channel — you
+    // want to test Telegram *before* switching reminders over to it.
+    if (path === "/api/telegram/test" && request.method === "POST") {
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {
+        /* an empty body is fine — fall back to the saved chat */
+      }
+      const s = await getSettings(env);
+      const chatId = clean(body.telegram_chat_id, 64) || s.telegram_chat_id;
+      const push = await pushTelegram(env, chatId, "Coming up", "Test message from your calendar.");
+      if (!push.ok) return json({ error: push.reason }, 502);
+      return json({ ok: true });
+    }
+
     if (path === "/api/upcoming" && request.method === "GET") {
       // Only what's actually due soon — a list padded out with birthdays a
       // year away isn't "upcoming notifications," it's just noise.
@@ -802,7 +994,7 @@ export default {
         .bind(fireMatch[1])
         .first();
       if (!rem) return json({ error: "Not found" }, 404);
-      const push = await pushNtfy(env, rem.all_day ? rem.title : `${rem.start_time} — ${rem.title}`);
+      const push = await deliverPush(env, rem.all_day ? rem.title : `${rem.start_time} — ${rem.title}`);
       if (!push.ok) {
         await env.DB.prepare(`UPDATE reminders SET attempts = attempts + 1, last_error = ? WHERE id = ?`)
           .bind(push.reason, fireMatch[1])
@@ -830,7 +1022,7 @@ export default {
       }
       const message = clean(body.message, 1000);
       if (!message) return json({ error: "Message is required." }, 400);
-      const push = await pushNtfy(env, message);
+      const push = await deliverPush(env, message);
       if (!push.ok) return json({ error: push.reason }, 502);
       return json({ ok: true });
     }
@@ -859,8 +1051,11 @@ export default {
       .bind(now, now - 3600)
       .all();
 
+    // One settings read for the whole batch, not one per reminder.
+    const settings = dueReminders.length ? await getSettings(env) : null;
+
     for (const rem of dueReminders) {
-      const push = await pushNtfy(env, rem.all_day ? rem.title : `${rem.start_time} — ${rem.title}`);
+      const push = await deliverPush(env, rem.all_day ? rem.title : `${rem.start_time} — ${rem.title}`, settings);
       await env.DB.prepare(
         push.ok
           ? `UPDATE reminders SET notified_at = ?1, last_error = NULL WHERE id = ?2`

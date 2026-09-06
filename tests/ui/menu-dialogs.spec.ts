@@ -2,7 +2,20 @@ import path from "node:path";
 
 import { expect, test } from "../support/fixtures";
 
-import { addReminderViaApi, clearStub, query, resetViaApi, stubPushes, unlock, watchForErrors } from "../support/helpers";
+import { TEST_BOT_USERNAME } from "../../playwright.config";
+import {
+  addReminderViaApi,
+  clearStub,
+  clearTelegramStub,
+  query,
+  resetNotifyChannel,
+  resetViaApi,
+  seedTelegramChats,
+  stubPushes,
+  telegramMessages,
+  unlock,
+  watchForErrors,
+} from "../support/helpers";
 
 const FIXTURES = path.join(__dirname, "..", "fixtures");
 
@@ -107,6 +120,69 @@ test.describe("iPhone setup dialog", () => {
     const button = await page.getByRole("button", { name: "Copy Topic" }).boundingBox();
     expect(button!.x + button!.width).toBeLessThanOrEqual(dialog!.x + dialog!.width);
   });
+
+  test.describe("the Telegram section", () => {
+    // The channel is stored in D1, so a spec that changes it has to put it
+    // back or every later spec's pushes go somewhere the ntfy stub isn't.
+    test.afterEach(async ({ api }) => {
+      await resetNotifyChannel(api);
+      await clearTelegramStub(api);
+    });
+
+    test("names the bot the token belongs to", async ({ page }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+      await expect(page.getByText(`@${TEST_BOT_USERNAME}`)).toBeVisible();
+    });
+
+    test("Find my chat fills the chat ID in from whoever started the bot", async ({ page, api }) => {
+      await seedTelegramChats(api, [{ id: 987654321, type: "private", first_name: "Valency" }]);
+
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+      await page.getByRole("button", { name: "Find my chat" }).click();
+
+      await expect(page.getByLabel("Chat ID")).toHaveValue("987654321");
+      await expect(page.getByRole("button", { name: "Valency" })).toBeVisible();
+    });
+
+    test("Send test delivers to Telegram while reminders are still on ntfy", async ({ page, api }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Chat ID").fill("987654321");
+      await page.getByRole("button", { name: "Send test" }).click();
+      await expect(page.getByText("Sent — check Telegram.")).toBeVisible();
+
+      const messages = await telegramMessages(api);
+      expect(messages).toHaveLength(1);
+      expect(messages[0].chat_id).toBe("987654321");
+    });
+
+    test("saving Telegram as the channel survives a reopen", async ({ page, api }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Chat ID").fill("987654321");
+      await page.getByLabel("Send reminders to").click();
+      await page.getByRole("option", { name: "Telegram only" }).click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(page.getByText("Saved.")).toBeVisible();
+
+      expect((await (await api.get("/api/notify-settings")).json()).channel).toBe("telegram");
+    });
+
+    test("refuses to switch to Telegram with no chat linked", async ({ page }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Send reminders to").click();
+      await page.getByRole("option", { name: "Telegram only" }).click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+
+      await expect(page.getByText(/link a telegram chat first/i)).toBeVisible();
+    });
+  });
 });
 
 test.describe("notifications dialog", () => {
@@ -161,7 +237,7 @@ test.describe("notifications dialog", () => {
     await unlock(page);
     await openMenu(page, "Notifications");
 
-    await page.getByPlaceholder("Send a message to ntfy…").fill("From the Send button");
+    await page.getByPlaceholder("Send a message to your phone…").fill("From the Send button");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.getByText("Sent.")).toBeVisible();
 
@@ -172,8 +248,8 @@ test.describe("notifications dialog", () => {
     await unlock(page);
     await openMenu(page, "Notifications");
 
-    await page.getByPlaceholder("Send a message to ntfy…").fill("Sent with Enter");
-    await page.getByPlaceholder("Send a message to ntfy…").press("Enter");
+    await page.getByPlaceholder("Send a message to your phone…").fill("Sent with Enter");
+    await page.getByPlaceholder("Send a message to your phone…").press("Enter");
     await expect(page.getByText("Sent.")).toBeVisible();
 
     expect(JSON.stringify(await stubPushes(api))).toContain("Sent with Enter");
@@ -183,7 +259,7 @@ test.describe("notifications dialog", () => {
     await unlock(page);
     await openMenu(page, "Notifications");
 
-    const box = page.getByPlaceholder("Send a message to ntfy…");
+    const box = page.getByPlaceholder("Send a message to your phone…");
     await box.fill("anything");
     await box.press("Enter");
     await expect(box).toHaveValue("");
