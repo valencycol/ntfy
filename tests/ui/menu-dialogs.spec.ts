@@ -148,12 +148,12 @@ test.describe("iPhone setup dialog", () => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
 
-      await page.getByLabel("Name").fill("Alvita");
+      await page.getByLabel("Name", { exact: true }).fill("Alvita");
       await page.getByLabel("@username or phone").fill("@alvita");
       await page.getByRole("button", { name: "Add", exact: true }).click();
 
       const dialog = page.getByRole("dialog");
-      await expect(dialog.getByText("Alvita")).toBeVisible();
+      await expect(dialog.getByText("Alvita", { exact: true })).toBeVisible();
       await expect(dialog.getByText(/waiting for them to tap start/i)).toBeVisible();
       await expect(dialog.getByRole("button", { name: "Copy invite" })).toBeVisible();
     });
@@ -162,7 +162,7 @@ test.describe("iPhone setup dialog", () => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
 
-      await page.getByLabel("Name").fill("Mum");
+      await page.getByLabel("Name", { exact: true }).fill("Mum");
       await page.getByLabel("@username or phone").fill("+46 70 123 45 67");
       await page.getByRole("button", { name: "Add", exact: true }).click();
 
@@ -173,7 +173,7 @@ test.describe("iPhone setup dialog", () => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
 
-      await page.getByLabel("Name").fill("Nobody");
+      await page.getByLabel("Name", { exact: true }).fill("Nobody");
       await page.getByLabel("@username or phone").fill("not a handle");
       await page.getByRole("button", { name: "Add", exact: true }).click();
 
@@ -184,7 +184,7 @@ test.describe("iPhone setup dialog", () => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
 
-      await page.getByLabel("Name").fill("Alvita");
+      await page.getByLabel("Name", { exact: true }).fill("Alvita");
       await page.getByLabel("@username or phone").fill("@alvita");
       await page.getByRole("button", { name: "Add", exact: true }).click();
       await expect(page.getByText(/waiting for them to tap start/i)).toBeVisible();
@@ -193,19 +193,19 @@ test.describe("iPhone setup dialog", () => {
       await page.getByRole("button", { name: "Check for new links" }).click();
 
       await expect(page.getByText(/^Linked$|Linked ·/)).toBeVisible();
-      await expect(page.getByRole("dialog").getByRole("button", { name: "Test" })).toBeVisible();
+      await expect(page.getByRole("dialog").getByRole("button", { name: "Test", exact: true })).toBeVisible();
     });
 
     test("a linked person can be tested, muted and removed", async ({ page, api }) => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
 
-      await page.getByLabel("Name").fill("Me");
+      await page.getByLabel("Name", { exact: true }).fill("Me");
       await page.getByLabel("@username or phone").fill("987654321");
       await page.getByRole("button", { name: "Add", exact: true }).click();
 
       const dialog = page.getByRole("dialog");
-      await dialog.getByRole("button", { name: "Test" }).click();
+      await dialog.getByRole("button", { name: "Test", exact: true }).click();
       await expect(page.getByText("Sent — check Telegram.")).toBeVisible();
       expect(await telegramMessages(api)).toHaveLength(1);
 
@@ -214,6 +214,44 @@ test.describe("iPhone setup dialog", () => {
 
       await dialog.getByRole("button", { name: "Remove Me" }).click();
       await expect(page.getByText("Nobody yet.")).toBeVisible();
+    });
+
+    test("Copy invite greys out once it has been used", async ({ page, context }) => {
+      await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Name", { exact: true }).fill("Alvita");
+      await page.getByLabel("@username or phone").fill("@alvita");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+
+      const copy = page.getByRole("button", { name: "Copy invite" });
+      await copy.click();
+
+      // It becomes a disabled "Copied", so it is obvious the link is in hand.
+      const copied = page.getByRole("button", { name: "Copied" });
+      await expect(copied).toBeVisible();
+      await expect(copied).toBeDisabled();
+    });
+
+    test("Send test is offered once somebody is linked, and not before", async ({ page, api }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      // Nobody linked: the button is there but cannot fire into the void.
+      const sendTest = page.getByRole("dialog").getByRole("button", { name: "Send test" });
+      await expect(sendTest).toBeDisabled();
+
+      await page.getByLabel("Name", { exact: true }).fill("Me");
+      await page.getByLabel("@username or phone").fill("987654321");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await expect(page.getByRole("dialog").getByText("Me", { exact: true })).toBeVisible();
+
+      await expect(sendTest).toBeEnabled();
+      await sendTest.click();
+      await expect(page.getByText("Sent — check Telegram.")).toBeVisible();
+
+      expect(await telegramMessages(api)).toHaveLength(1);
     });
 
     test("switching to Telegram is refused while nobody is linked", async ({ page }) => {
@@ -231,10 +269,10 @@ test.describe("iPhone setup dialog", () => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
 
-      await page.getByLabel("Name").fill("Me");
+      await page.getByLabel("Name", { exact: true }).fill("Me");
       await page.getByLabel("@username or phone").fill("987654321");
       await page.getByRole("button", { name: "Add", exact: true }).click();
-      await expect(page.getByRole("dialog").getByText("Me")).toBeVisible();
+      await expect(page.getByRole("dialog").getByText("Me", { exact: true })).toBeVisible();
 
       await page.getByLabel("Send reminders to").click();
       await page.getByRole("option", { name: "Telegram only" }).click();

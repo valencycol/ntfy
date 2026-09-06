@@ -139,7 +139,7 @@ test.describe("Telegram recipients", () => {
       expect((await telegramSettings(api)).telegram.recipients[0].chat_id).toBe("555000444");
     });
 
-    test("someone who is nobody's invite is offered as a detected chat", async ({ api }) => {
+    test("a start that matches nobody is recorded rather than dropped", async ({ api }) => {
       await seedTelegramChats(api, [{ id: 555000555, type: "private", first_name: "Stranger" }]);
       expect((await api.post("/api/telegram/poll")).status()).toBe(200);
 

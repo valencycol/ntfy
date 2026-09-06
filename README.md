@@ -373,18 +373,20 @@ username ending in `bot`. It replies with a token.
 npx wrangler secret put TELEGRAM_BOT_TOKEN   # from BotFather
 ```
 
-### 3. Make sure the `settings` table exists
+### 3. Create the Telegram tables
 
-The channel choice is stored in D1, in a `settings` table that is newer than the
-rest of the schema. Migrations do **not** run on deploy, so a database created
-before this feature needs the schema re-run once:
+Telegram's state lives in D1: `settings` for the channel choice,
+`telegram_recipients` for the people, and `telegram_chats` for starts that
+matched nobody. Migrations do **not** run on deploy, so the schema has to be
+re-run once after any change that adds a table:
 
 ```bash
 npx wrangler d1 execute events --remote --file=./schema.sql
 ```
 
 Safe on an existing database — it is all `CREATE TABLE IF NOT EXISTS` and
-touches no rows. Skip it and the app silently stays on ntfy rather than failing.
+touches no rows. Skip it and adding a person fails with a bare 500, because the
+table the insert targets is not there.
 
 ### 4. Deploy
 
@@ -392,40 +394,44 @@ touches no rows. Skip it and the app silently stays on ntfy rather than failing.
 npm run deploy
 ```
 
-### 5. Link your chat
+### 5. Add the people who should get reminders
 
-A Telegram bot **cannot message you first**, so it has to hear from you once:
+Open the menu → **iPhone setup** → *Reminders via Telegram*. The section names
+the bot your token belongs to — check that first; a token pasted from the wrong
+bot is the most common setup mistake and everything downstream fails oddly.
 
-1. Open a chat with your new bot and tap **Start**.
-2. In the calendar, open the menu → **iPhone setup** → *Reminders via Telegram*.
-   The section names the bot the token belongs to, which is the quickest way to
-   confirm the secret went in correctly.
-3. Tap **Find my chat**. It asks the bot who has messaged it and fills in your
-   chat ID.
-4. Tap **Send test** and confirm the message arrives. This works regardless of
-   which channel is currently selected — test Telegram *before* trusting it.
-5. Set **Send reminders to** and press **Save**.
+Add each person by **name** plus either an **@username** or a **phone number**.
+A bot cannot message anyone first, and the Bot API cannot address a person by
+username or phone at all — only by a numeric chat ID — so adding someone records
+who you expect and generates a one-time invite link. Send them that link. When
+they open it and tap **Start**, they are bound automatically.
 
-To reach a group instead, add the bot to the group, send a message there, and
-**Find my chat** will offer it too. A channel works as `@channelname`, with the
-bot added as an administrator. For a person it is always the **number** — the
-Bot API cannot address someone by `@username`, which is the whole reason the
-linking step exists.
+Linking is picked up by the cron within a minute; **Check for new links** does it
+immediately. Then **Send test** before trusting it with anything real.
 
-**Give the calendar its own bot.** If you point `TELEGRAM_BOT_TOKEN` at a bot
-another app already drives, **Find my chat** fails: Telegram lets a bot use a
-webhook *or* `getUpdates`, never both, and the other app owns the webhook. The
-dialog says so and names the bot the token really belongs to. Do **not** run
-`deleteWebhook` to get past it — that breaks the other app. Either make a second
-bot, or type the chat ID in by hand, which needs no `getUpdates` at all.
+A **numeric chat ID** can be pasted into the same field and links straight away,
+with no invite step — that is the quickest way to add yourself. Message
+**@userinfobot** if you don't know yours. It is neither your `@username` nor your
+phone number.
 
-Not sure what your chat ID is? Message **@userinfobot**; it replies with your
-user ID, which is your private chat ID for every bot. It is neither your
-`@username` nor your phone number.
+Reminders go to everyone who is linked and not muted. Each person can be tested
+on their own, muted without being removed, or deleted outright. One person's
+delivery failing does not stop anybody else's.
 
-Only the bot token is a secret. The chat ID is not one — it identifies a chat but
-does not grant access to it — so it is stored as an ordinary setting and stays
-editable in the dialog.
+To reach a group, add the bot to the group and send a message there; a channel
+works as `@channelname` with the bot added as an administrator.
+
+**Give the calendar its own bot.** If `TELEGRAM_BOT_TOKEN` points at a bot
+another app already drives, linking fails: Telegram lets a bot use a webhook
+*or* `getUpdates`, never both, and the other app owns the webhook. The dialog
+says so and names the bot. Do **not** run `deleteWebhook` to get past it — that
+breaks the other app. Use a second bot, or add people by numeric chat ID.
+
+**Why polling and not a webhook.** This bot only ever speaks; nothing in the
+calendar is resolved from a notification. The cron already runs every minute, so
+it polls `getUpdates` for new links instead — the same updates a webhook would
+deliver, with no public callback URL and no webhook secret. The cost is up to a
+minute's delay when someone taps their invite, which nothing depends on.
 
 ---
 
@@ -524,7 +530,11 @@ Projects run in order — api → ui → mobile → throttle — with `ui` depen
 | Key | Meaning |
 | --- | --- |
 | `notify_channel` | `ntfy`, `telegram` or `both`. |
-| `telegram_chat_id` | The chat reminders are sent to. |
+| `telegram_offset` | The `getUpdates` cursor, so an update is processed once. |
+
+Who reminders go to lives in `telegram_recipients`, managed from the dialog. An
+older single-recipient `telegram_chat_id` setting is migrated into that table
+automatically on first load.
 
 ---
 

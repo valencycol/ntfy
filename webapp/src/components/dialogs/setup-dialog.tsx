@@ -91,6 +91,7 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
   const [newName, setNewName] = useState("");
   const [newHandle, setNewHandle] = useState("");
   const [telegramState, setTelegramState] = useState("");
+  const [copiedInvite, setCopiedInvite] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const loadSettings = useCallback(async () => {
@@ -172,11 +173,14 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
       return "Sent — check Telegram.";
     });
 
-  const copyInvite = async (invite: string) => {
+  const copyInvite = async (id: string, invite: string) => {
     try {
       await navigator.clipboard.writeText(invite);
-      setTelegramState("Invite link copied.");
+      setCopiedInvite(id);
+      setTimeout(() => setCopiedInvite(null), 2500);
+      setTelegramState("Invite link copied — send it to them.");
     } catch {
+      // Clipboard blocked; show the link so it can still be copied by hand.
       setTelegramState(invite);
     }
   };
@@ -241,6 +245,15 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
                     message anyone until they&apos;ve started it.
                   </p>
 
+                  {/* Which bot the token actually belongs to, straight from getMe. The
+                      fastest way to catch a token pasted from the wrong bot — the
+                      failure otherwise shows up as a baffling webhook conflict. */}
+                  {settings?.telegram.bot && (
+                    <p className="text-xs text-muted-foreground">
+                      Sending as <span className="font-medium text-foreground">@{settings.telegram.bot}</span>
+                    </p>
+                  )}
+
                   {settings?.telegram.error && <p className="text-xs font-medium text-destructive">{settings.telegram.error}</p>}
 
                   <ul className="divide-y rounded-md border">
@@ -263,9 +276,15 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
                         </div>
 
                         {person.invite && (
-                          <Button type="button" size="sm" variant="outline" onClick={() => copyInvite(person.invite!)}>
-                            <Link2 className="size-3.5" />
-                            Copy invite
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => copyInvite(person.id, person.invite!)}
+                            disabled={copiedInvite === person.id}
+                          >
+                            {copiedInvite === person.id ? <Check className="size-3.5" /> : <Link2 className="size-3.5" />}
+                            {copiedInvite === person.id ? "Copied" : "Copy invite"}
                           </Button>
                         )}
 
@@ -321,31 +340,6 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
                     </Button>
                   </div>
 
-                  {settings && settings.telegram.detected.length > 0 && (
-                    <div className="grid gap-1.5">
-                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Started the bot, not on the list</p>
-                      <ul className="flex flex-wrap gap-2">
-                        {settings.telegram.detected.map(chat => (
-                          <li key={chat.chat_id}>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={busy}
-                              onClick={() => {
-                                setNewName(chat.name);
-                                setNewHandle(chat.chat_id);
-                              }}
-                            >
-                              {chat.name}
-                            </Button>
-                          </li>
-                        ))}
-                      </ul>
-                      <p className="text-xs text-muted-foreground">Tap one to fill the form in, then Add.</p>
-                    </div>
-                  )}
-
                   <div className="grid gap-1">
                     <label htmlFor="notify-channel" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       Send reminders to
@@ -367,6 +361,15 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
                   <div className="flex flex-wrap items-center gap-2">
                     <Button type="button" onClick={saveChannel} disabled={busy}>
                       Save
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => sendTest()}
+                      disabled={busy || !settings?.telegram.recipients.some(r => r.chat_id && r.enabled)}
+                    >
+                      <Send className="size-4" />
+                      Send test
                     </Button>
                     <Button type="button" variant="outline" onClick={checkLinks} disabled={busy}>
                       <RefreshCw className="size-4" />
