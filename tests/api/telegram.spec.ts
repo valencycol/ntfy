@@ -11,6 +11,7 @@ import {
   stubPushes,
   telegramFailNext,
   telegramMessages,
+  telegramWebhookActive,
 } from "../support/helpers";
 
 const SCHEDULED_URL = `${BASE_URL}/cdn-cgi/local/scheduled`;
@@ -51,6 +52,23 @@ test.describe("Telegram as a reminder channel", () => {
   test("discover returns nothing before anyone has started the bot", async ({ api }) => {
     const { chats } = await (await api.post("/api/telegram/discover")).json();
     expect(chats).toEqual([]);
+  });
+
+  // Reusing another app's bot token is the mistake this guards against: the
+  // other app has a webhook on it, Telegram refuses getUpdates, and its own
+  // wording ("use deleteWebhook first") points at the one action that would
+  // break that other app.
+  test("a token already driven by another app explains itself instead of relaying Telegram", async ({ api }) => {
+    await telegramWebhookActive(api);
+
+    const response = await api.post("/api/telegram/discover");
+    expect(response.status()).toBe(409);
+
+    const { error } = await response.json();
+    expect(error).toContain(TEST_BOT_USERNAME);          // which bot the token is really for
+    expect(error).toMatch(/separate bot|by hand/i);       // what to do instead
+    expect(error).toMatch(/do not delete that webhook/i); // and what not to do
+    expect(error).not.toMatch(/use deleteWebhook to delete/i);
   });
 
   test("the channel can be switched to Telegram and comes back on the next read", async ({ api }) => {

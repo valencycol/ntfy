@@ -48,8 +48,8 @@ export function CalendarDayView({ singleDayEvents, multiDayEvents }: IProps) {
   const groupedEvents = groupEvents(dayEvents);
 
   return (
-    <div className="flex">
-      <div className="flex flex-1 flex-col">
+    <div className="flex h-[calc(100dvh-13.5rem)] min-h-[24rem]">
+      <div className="flex min-h-0 flex-1 flex-col">
         <div>
           <DayViewMultiDayEventsRow selectedDate={selectedDate} multiDayEvents={multiDayEvents} />
 
@@ -62,7 +62,7 @@ export function CalendarDayView({ singleDayEvents, multiDayEvents }: IProps) {
           </div>
         </div>
 
-        <ScrollArea className="h-[calc(100dvh-15.5rem)] min-h-[20rem]" type="always">
+        <ScrollArea className="min-h-0 flex-1" type="always">
           <div className="flex">
             {/* Hours column */}
             <div className="relative w-18">
@@ -145,10 +145,10 @@ export function CalendarDayView({ singleDayEvents, multiDayEvents }: IProps) {
         </ScrollArea>
       </div>
 
-      <div className="hidden w-64 divide-y border-l md:block">
+      <div className="hidden w-64 flex-col divide-y border-l md:flex">
         <Calendar className="mx-auto w-fit" mode="single" selected={selectedDate} onSelect={setSelectedDate} initialFocus />
 
-        <div className="flex-1 space-y-3">
+        <div className="flex min-h-0 flex-1 flex-col space-y-3">
           {currentEvents.length > 0 ? (
             <div className="flex items-start gap-2 px-4 pt-4">
               <span className="relative mt-[5px] flex size-2.5">
@@ -163,7 +163,7 @@ export function CalendarDayView({ singleDayEvents, multiDayEvents }: IProps) {
           )}
 
           {currentEvents.length > 0 && (
-            <ScrollArea className="h-[calc(100dvh-15.5rem-19rem)] min-h-[8rem] px-4" type="always">
+            <ScrollArea className="min-h-0 flex-1 px-4" type="always">
               <div className="space-y-6 pb-4">
                 {currentEvents.map(event => {
                   return (

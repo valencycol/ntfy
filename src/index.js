@@ -941,7 +941,26 @@ export default {
     // the whole registration dance the task app needs is unnecessary here.
     if (path === "/api/telegram/discover" && request.method === "POST") {
       const updates = await telegramCall(env, "getUpdates", { limit: 100, allowed_updates: ["message"] });
-      if (!updates.ok) return json({ error: updates.reason }, 502);
+      if (!updates.ok) {
+        // Telegram lets a bot use a webhook or getUpdates, never both. Hitting
+        // this means the token belongs to a bot some *other* app is driving,
+        // which its own wording does not make obvious — and the tempting fix,
+        // deleteWebhook, would silently break that other app.
+        if (/webhook is active|Conflict/i.test(updates.reason)) {
+          const me = await telegramCall(env, "getMe");
+          const who = me.ok && me.result?.username ? `@${me.result.username}` : "this bot";
+          return json(
+            {
+              error:
+                `${who} already has a webhook registered, so another app is using this token. ` +
+                `Create a separate bot for the calendar with @BotFather, or type your chat ID in by hand below. ` +
+                `Do not delete that webhook — it would break whatever app registered it.`,
+            },
+            409,
+          );
+        }
+        return json({ error: updates.reason }, 502);
+      }
 
       const chats = new Map();
       for (const update of updates.result || []) {

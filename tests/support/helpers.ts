@@ -229,6 +229,11 @@ export async function telegramFailNext(request: APIRequestContext, count = 1) {
   await request.post(`${TELEGRAM_STUB_URL}/__fail`, { data: { count } });
 }
 
+/** Makes the stub reject getUpdates the way Telegram does when a webhook is registered. */
+export async function telegramWebhookActive(request: APIRequestContext, active = true) {
+  await request.post(`${TELEGRAM_STUB_URL}/__webhook`, { data: { active } });
+}
+
 /**
  * Puts the notification channel back to ntfy-only. Every spec that touches
  * the setting must call this afterwards: it is stored in D1, so leaving it on

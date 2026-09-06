@@ -35,7 +35,7 @@ export function CalendarWeekView({ singleDayEvents, multiDayEvents }: IProps) {
         <p>Please switch to daily or monthly view.</p>
       </div>
 
-      <div className="hidden flex-col sm:flex">
+      <div className="hidden h-[calc(100dvh-13.5rem)] min-h-[24rem] flex-col sm:flex">
         <div>
           <WeekViewMultiDayEventsRow selectedDate={selectedDate} multiDayEvents={multiDayEvents} />
 
@@ -52,7 +52,7 @@ export function CalendarWeekView({ singleDayEvents, multiDayEvents }: IProps) {
           </div>
         </div>
 
-        <ScrollArea className="h-[calc(100dvh-15.5rem)] min-h-[20rem]" type="always">
+        <ScrollArea className="min-h-0 flex-1" type="always">
           <div className="flex overflow-hidden">
             {/* Hours column */}
             <div className="relative w-18">

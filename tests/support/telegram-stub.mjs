@@ -11,6 +11,8 @@
  * DELETE /__messages  clears the log, the seeded updates and any pending failure
  * POST   /__fail      makes the next N sendMessage calls reply like Telegram does
  * POST   /__updates   seeds the chats getUpdates will report
+ * POST   /__webhook   pretends a webhook is registered, so getUpdates 409s
+ *                     the way it does when another app is driving the bot
  */
 import { createServer } from "node:http";
 
@@ -20,6 +22,7 @@ export const BOT_USERNAME = "events_test_bot";
 const messages = [];
 let updates = [];
 let failuresRemaining = 0;
+let webhookActive = false;
 
 const readBody = req =>
   new Promise(resolve => {
@@ -47,6 +50,7 @@ const server = createServer(async (req, res) => {
       messages.length = 0;
       updates = [];
       failuresRemaining = 0;
+      webhookActive = false;
       return json(200, { ok: true });
     }
   }
@@ -54,6 +58,11 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/__fail" && req.method === "POST") {
     failuresRemaining = Number((await readBody(req)).count ?? 1);
     return json(200, { ok: true, failuresRemaining });
+  }
+
+  if (url.pathname === "/__webhook" && req.method === "POST") {
+    webhookActive = (await readBody(req)).active !== false;
+    return json(200, { ok: true, webhookActive });
   }
 
   if (url.pathname === "/__updates" && req.method === "POST") {
@@ -73,7 +82,17 @@ const server = createServer(async (req, res) => {
     const payload = await readBody(req);
 
     if (method === "getMe") return json(200, { ok: true, result: { id: 42, is_bot: true, username: BOT_USERNAME, first_name: "Events" } });
-    if (method === "getUpdates") return json(200, { ok: true, result: updates });
+    if (method === "getUpdates") {
+      // Telegram's actual response when the bot has a webhook registered.
+      if (webhookActive) {
+        return json(409, {
+          ok: false,
+          error_code: 409,
+          description: "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first",
+        });
+      }
+      return json(200, { ok: true, result: updates });
+    }
 
     if (method === "sendMessage") {
       if (failuresRemaining > 0) {
