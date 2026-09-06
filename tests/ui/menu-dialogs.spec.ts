@@ -5,6 +5,7 @@ import { expect, test } from "../support/fixtures";
 import { TEST_BOT_USERNAME } from "../../playwright.config";
 import {
   addReminderViaApi,
+  clearRecipients,
   clearStub,
   clearTelegramStub,
   query,
@@ -13,6 +14,7 @@ import {
   seedTelegramChats,
   stubPushes,
   telegramMessages,
+  telegramSettings,
   unlock,
   watchForErrors,
 } from "../support/helpers";
@@ -122,10 +124,11 @@ test.describe("iPhone setup dialog", () => {
   });
 
   test.describe("the Telegram section", () => {
-    // The channel is stored in D1, so a spec that changes it has to put it
-    // back or every later spec's pushes go somewhere the ntfy stub isn't.
+    // Recipients and the channel both live in D1, so a spec that adds either
+    // has to clean up or the next one's pushes go somewhere unexpected.
     test.afterEach(async ({ api }) => {
       await resetNotifyChannel(api);
+      await clearRecipients(api);
       await clearTelegramStub(api);
     });
 
@@ -135,52 +138,110 @@ test.describe("iPhone setup dialog", () => {
       await expect(page.getByText(`@${TEST_BOT_USERNAME}`)).toBeVisible();
     });
 
-    test("Find my chat fills the chat ID in from whoever started the bot", async ({ page, api }) => {
-      await seedTelegramChats(api, [{ id: 987654321, type: "private", first_name: "Valency" }]);
-
+    test("starts out saying nobody is set up", async ({ page }) => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
-      await page.getByRole("button", { name: "Find my chat" }).click();
-
-      await expect(page.getByLabel("Chat ID")).toHaveValue("987654321");
-      await expect(page.getByRole("button", { name: "Valency" })).toBeVisible();
+      await expect(page.getByText("Nobody yet.")).toBeVisible();
     });
 
-    test("Send test delivers to Telegram while reminders are still on ntfy", async ({ page, api }) => {
+    test("adding someone by username shows them waiting, with an invite to copy", async ({ page }) => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
 
-      await page.getByLabel("Chat ID").fill("987654321");
-      await page.getByRole("button", { name: "Send test" }).click();
+      await page.getByLabel("Name").fill("Alvita");
+      await page.getByLabel("@username or phone").fill("@alvita");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByText("Alvita")).toBeVisible();
+      await expect(dialog.getByText(/waiting for them to tap start/i)).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "Copy invite" })).toBeVisible();
+    });
+
+    test("a person is added by phone number too", async ({ page }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Name").fill("Mum");
+      await page.getByLabel("@username or phone").fill("+46 70 123 45 67");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+
+      await expect(page.getByRole("dialog").getByText("+46 70 123 45 67")).toBeVisible();
+    });
+
+    test("a handle that is neither is refused with a usable message", async ({ page }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Name").fill("Nobody");
+      await page.getByLabel("@username or phone").fill("not a handle");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+
+      await expect(page.getByText(/enter a @username, a phone number, or a numeric chat id/i)).toBeVisible();
+    });
+
+    test("Check for new links binds whoever started the bot", async ({ page, api }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Name").fill("Alvita");
+      await page.getByLabel("@username or phone").fill("@alvita");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await expect(page.getByText(/waiting for them to tap start/i)).toBeVisible();
+
+      await seedTelegramChats(api, [{ id: 606060606, type: "private", first_name: "Alvita", username: "alvita" }]);
+      await page.getByRole("button", { name: "Check for new links" }).click();
+
+      await expect(page.getByText(/^Linked$|Linked ·/)).toBeVisible();
+      await expect(page.getByRole("dialog").getByRole("button", { name: "Test" })).toBeVisible();
+    });
+
+    test("a linked person can be tested, muted and removed", async ({ page, api }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Name").fill("Me");
+      await page.getByLabel("@username or phone").fill("987654321");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+
+      const dialog = page.getByRole("dialog");
+      await dialog.getByRole("button", { name: "Test" }).click();
       await expect(page.getByText("Sent — check Telegram.")).toBeVisible();
+      expect(await telegramMessages(api)).toHaveLength(1);
 
-      const messages = await telegramMessages(api);
-      expect(messages).toHaveLength(1);
-      expect(messages[0].chat_id).toBe("987654321");
+      await dialog.getByRole("button", { name: "Mute Me" }).click();
+      await expect(page.getByText("Me muted.")).toBeVisible();
+
+      await dialog.getByRole("button", { name: "Remove Me" }).click();
+      await expect(page.getByText("Nobody yet.")).toBeVisible();
     });
 
-    test("saving Telegram as the channel survives a reopen", async ({ page, api }) => {
+    test("switching to Telegram is refused while nobody is linked", async ({ page }) => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
 
-      await page.getByLabel("Chat ID").fill("987654321");
+      await page.getByLabel("Send reminders to").click();
+      await page.getByRole("option", { name: "Telegram only" }).click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+
+      await expect(page.getByText(/add someone and wait for them to start the bot/i)).toBeVisible();
+    });
+
+    test("with someone linked, Telegram can be saved as the channel", async ({ page, api }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Name").fill("Me");
+      await page.getByLabel("@username or phone").fill("987654321");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await expect(page.getByRole("dialog").getByText("Me")).toBeVisible();
+
       await page.getByLabel("Send reminders to").click();
       await page.getByRole("option", { name: "Telegram only" }).click();
       await page.getByRole("button", { name: "Save", exact: true }).click();
       await expect(page.getByText("Saved.")).toBeVisible();
 
-      expect((await (await api.get("/api/notify-settings")).json()).channel).toBe("telegram");
-    });
-
-    test("refuses to switch to Telegram with no chat linked", async ({ page }) => {
-      await unlock(page);
-      await openMenu(page, "iPhone setup");
-
-      await page.getByLabel("Send reminders to").click();
-      await page.getByRole("option", { name: "Telegram only" }).click();
-      await page.getByRole("button", { name: "Save", exact: true }).click();
-
-      await expect(page.getByText(/link a telegram chat first/i)).toBeVisible();
+      expect((await telegramSettings(api)).channel).toBe("telegram");
     });
   });
 });

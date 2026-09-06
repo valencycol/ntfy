@@ -49,7 +49,8 @@ test.describe("authentication", () => {
       ["/api/notify", "post"],
       ["/api/notify-settings", "get"],
       ["/api/notify-settings", "put"],
-      ["/api/telegram/discover", "post"],
+      ["/api/telegram/recipients", "post"],
+      ["/api/telegram/poll", "post"],
       ["/api/telegram/test", "post"],
     ];
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Check, Copy, Link2, Send } from "lucide-react";
+import { AlertTriangle, Bell, BellOff, Check, Copy, Link2, RefreshCw, Send, Trash2, UserPlus } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 interface INtfyInfo {
   server: string;
@@ -18,20 +19,34 @@ interface INtfyInfo {
 
 type TChannel = "ntfy" | "telegram" | "both";
 
+interface IRecipient {
+  id: string;
+  name: string;
+  handle: string | null;
+  handle_kind: string | null;
+  chat_id: string | null;
+  tg_username: string | null;
+  linked_at: number | null;
+  enabled: number;
+  /** Deep link to send them; null once they are linked. */
+  invite: string | null;
+}
+
+interface IDetectedChat {
+  chat_id: string;
+  name: string;
+  username: string | null;
+}
+
 interface INotifySettings {
   channel: TChannel;
   telegram: {
     tokenSet: boolean;
-    chatId: string;
     bot: string | null;
     error: string | null;
+    recipients: IRecipient[];
+    detected: IDetectedChat[];
   };
-}
-
-interface IDiscoveredChat {
-  id: string;
-  name: string;
-  type: string;
 }
 
 const CHANNEL_LABELS: Record<TChannel, string> = {
@@ -73,8 +88,8 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
 
   const [settings, setSettings] = useState<INotifySettings | null>(null);
   const [channel, setChannel] = useState<TChannel>("ntfy");
-  const [chatId, setChatId] = useState("");
-  const [chats, setChats] = useState<IDiscoveredChat[] | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newHandle, setNewHandle] = useState("");
   const [telegramState, setTelegramState] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -82,13 +97,11 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
     const next = await api<INotifySettings>("/api/notify-settings");
     setSettings(next);
     setChannel(next.channel);
-    setChatId(next.telegram.chatId);
   }, []);
 
   useEffect(() => {
     if (!open) return;
     setTelegramState("");
-    setChats(null);
     (async () => {
       try {
         const [ntfy, feed] = await Promise.all([
@@ -104,50 +117,67 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
     })();
   }, [open, loadSettings]);
 
-  // Telegram bots cannot open a conversation, so the chat ID only exists once
-  // the user has sent the bot something. This asks the bot who has.
-  const discover = async () => {
+  const run = async (label: string, work: () => Promise<string>) => {
     setBusy(true);
-    setTelegramState("Looking for chats…");
+    setTelegramState(label);
     try {
-      const { chats: found } = await api<{ chats: IDiscoveredChat[] }>("/api/telegram/discover", { method: "POST" });
-      setChats(found);
-      if (found.length === 1) setChatId(found[0].id);
-      setTelegramState(found.length ? "" : "No chats yet — send the bot a message, then look again.");
-    } catch (err) {
-      setTelegramState(err instanceof Error ? err.message : "Could not reach Telegram.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const saveChannel = async () => {
-    setBusy(true);
-    setTelegramState("Saving…");
-    try {
-      await api("/api/notify-settings", {
-        method: "PUT",
-        body: JSON.stringify({ channel, telegram_chat_id: chatId.trim() }),
-      });
+      setTelegramState(await work());
       await loadSettings();
-      setTelegramState("Saved.");
     } catch (err) {
-      setTelegramState(err instanceof Error ? err.message : "Could not save.");
+      setTelegramState(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
       setBusy(false);
     }
   };
 
-  const sendTest = async () => {
-    setBusy(true);
-    setTelegramState("Sending…");
+  const addRecipient = () =>
+    run("Adding…", async () => {
+      await api("/api/telegram/recipients", {
+        method: "POST",
+        body: JSON.stringify({ name: newName.trim(), handle: newHandle.trim() }),
+      });
+      setNewName("");
+      setNewHandle("");
+      return "Added. Send them their invite link.";
+    });
+
+  const removeRecipient = (id: string, name: string) => run("Removing…", async () => {
+    await api(`/api/telegram/recipients/${id}`, { method: "DELETE" });
+    return `Removed ${name}.`;
+  });
+
+  const toggleRecipient = (person: IRecipient) =>
+    run(person.enabled ? "Muting…" : "Unmuting…", async () => {
+      await api(`/api/telegram/recipients/${person.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !person.enabled }) });
+      return person.enabled ? `${person.name} muted.` : `${person.name} unmuted.`;
+    });
+
+  // The cron polls for this every minute anyway; the button is for "I just
+  // tapped the link, don't make me wait".
+  const checkLinks = () =>
+    run("Checking…", async () => {
+      const { bound } = await api<{ bound: number }>("/api/telegram/poll", { method: "POST" });
+      return bound ? `Linked ${bound} ${bound === 1 ? "person" : "people"}.` : "Nobody new yet.";
+    });
+
+  const saveChannel = () =>
+    run("Saving…", async () => {
+      await api("/api/notify-settings", { method: "PUT", body: JSON.stringify({ channel }) });
+      return "Saved.";
+    });
+
+  const sendTest = (id?: string) =>
+    run("Sending…", async () => {
+      await api("/api/telegram/test", { method: "POST", body: JSON.stringify(id ? { id } : {}) });
+      return "Sent — check Telegram.";
+    });
+
+  const copyInvite = async (invite: string) => {
     try {
-      await api("/api/telegram/test", { method: "POST", body: JSON.stringify({ telegram_chat_id: chatId.trim() }) });
-      setTelegramState("Sent — check Telegram.");
-    } catch (err) {
-      setTelegramState(err instanceof Error ? err.message : "Could not send.");
-    } finally {
-      setBusy(false);
+      await navigator.clipboard.writeText(invite);
+      setTelegramState("Invite link copied.");
+    } catch {
+      setTelegramState(invite);
     }
   };
 
@@ -204,48 +234,116 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
                 </p>
               ) : (
                 <>
-                  <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
-                    <li>
-                      Open a chat with{" "}
-                      <span className="font-medium text-foreground">{settings?.telegram.bot ? `@${settings.telegram.bot}` : "your bot"}</span> and tap{" "}
-                      <span className="font-medium text-foreground">Start</span> — a bot can&apos;t message you until you message it.
-                    </li>
-                    <li>
-                      Tap <span className="font-medium text-foreground">Find my chat</span> below, then <span className="font-medium text-foreground">Send test</span>.
-                    </li>
-                  </ol>
+                  <p className="text-sm text-muted-foreground">
+                    Reminders go to everyone below. Add a person by their{" "}
+                    <span className="font-medium text-foreground">@username</span> or{" "}
+                    <span className="font-medium text-foreground">phone number</span>, then send them the invite link — a bot can&apos;t
+                    message anyone until they&apos;ve started it.
+                  </p>
 
                   {settings?.telegram.error && <p className="text-xs font-medium text-destructive">{settings.telegram.error}</p>}
 
-                  <div className="grid gap-1">
-                    <label htmlFor="telegram-chat-id" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                      Chat ID
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        id="telegram-chat-id"
-                        placeholder="e.g. 123456789"
-                        value={chatId}
-                        onChange={e => setChatId(e.target.value)}
-                        className="font-mono"
-                      />
-                      <Button type="button" variant="outline" onClick={discover} disabled={busy} className="shrink-0">
-                        <Link2 className="size-4" />
-                        Find my chat
-                      </Button>
+                  <ul className="divide-y rounded-md border">
+                    {settings?.telegram.recipients.length === 0 && (
+                      <li className="px-3 py-4 text-center text-sm text-muted-foreground">Nobody yet.</li>
+                    )}
+
+                    {settings?.telegram.recipients.map(person => (
+                      <li key={person.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <p className={cn("truncate text-sm font-medium", !person.enabled && "text-muted-foreground line-through")}>{person.name}</p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {person.chat_id ? (
+                              <span className="text-green-600 dark:text-green-500">Linked{person.tg_username ? ` · @${person.tg_username}` : ""}</span>
+                            ) : (
+                              <span className="text-amber-600 dark:text-amber-500">Waiting for them to tap Start</span>
+                            )}
+                            {person.handle && <span> · {person.handle}</span>}
+                          </p>
+                        </div>
+
+                        {person.invite && (
+                          <Button type="button" size="sm" variant="outline" onClick={() => copyInvite(person.invite!)}>
+                            <Link2 className="size-3.5" />
+                            Copy invite
+                          </Button>
+                        )}
+
+                        {person.chat_id && (
+                          <>
+                            <Button type="button" size="sm" variant="outline" onClick={() => sendTest(person.id)} disabled={busy}>
+                              <Send className="size-3.5" />
+                              Test
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => toggleRecipient(person)}
+                              disabled={busy}
+                              aria-label={person.enabled ? `Mute ${person.name}` : `Unmute ${person.name}`}
+                            >
+                              {person.enabled ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
+                            </Button>
+                          </>
+                        )}
+
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => removeRecipient(person.id, person.name)}
+                          disabled={busy}
+                          aria-label={`Remove ${person.name}`}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="grid min-w-0 flex-1 gap-1">
+                      <label htmlFor="tg-name" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        Name
+                      </label>
+                      <Input id="tg-name" placeholder="Alvita" value={newName} onChange={e => setNewName(e.target.value)} />
                     </div>
+                    <div className="grid min-w-0 flex-1 gap-1">
+                      <label htmlFor="tg-handle" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        @username or phone
+                      </label>
+                      <Input id="tg-handle" placeholder="@alvita" value={newHandle} onChange={e => setNewHandle(e.target.value)} />
+                    </div>
+                    <Button type="button" onClick={addRecipient} disabled={busy || !newName.trim() || !newHandle.trim()}>
+                      <UserPlus className="size-4" />
+                      Add
+                    </Button>
                   </div>
 
-                  {chats && chats.length > 0 && (
-                    <ul className="flex flex-wrap gap-2">
-                      {chats.map(chat => (
-                        <li key={chat.id}>
-                          <Button type="button" size="sm" variant={chatId === chat.id ? "default" : "outline"} onClick={() => setChatId(chat.id)}>
-                            {chat.name}
-                          </Button>
-                        </li>
-                      ))}
-                    </ul>
+                  {settings && settings.telegram.detected.length > 0 && (
+                    <div className="grid gap-1.5">
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Started the bot, not on the list</p>
+                      <ul className="flex flex-wrap gap-2">
+                        {settings.telegram.detected.map(chat => (
+                          <li key={chat.chat_id}>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={busy}
+                              onClick={() => {
+                                setNewName(chat.name);
+                                setNewHandle(chat.chat_id);
+                              }}
+                            >
+                              {chat.name}
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="text-xs text-muted-foreground">Tap one to fill the form in, then Add.</p>
+                    </div>
                   )}
 
                   <div className="grid gap-1">
@@ -270,9 +368,9 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
                     <Button type="button" onClick={saveChannel} disabled={busy}>
                       Save
                     </Button>
-                    <Button type="button" variant="outline" onClick={sendTest} disabled={busy || !chatId.trim()}>
-                      <Send className="size-4" />
-                      Send test
+                    <Button type="button" variant="outline" onClick={checkLinks} disabled={busy}>
+                      <RefreshCw className="size-4" />
+                      Check for new links
                     </Button>
                     {telegramState && <p className="text-sm text-muted-foreground">{telegramState}</p>}
                   </div>

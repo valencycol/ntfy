@@ -10,7 +10,9 @@
  * GET    /__messages  everything sendMessage has recorded
  * DELETE /__messages  clears the log, the seeded updates and any pending failure
  * POST   /__fail      makes the next N sendMessage calls reply like Telegram does
- * POST   /__updates   seeds the chats getUpdates will report
+ * POST   /__updates   queues updates for getUpdates to deliver: {chats:[...]}
+ *                     for plain /start, or {updates:[...]} for raw ones
+ *                     (deep-link payloads, shared contacts)
  * POST   /__webhook   pretends a webhook is registered, so getUpdates 409s
  *                     the way it does when another app is driving the bot
  */
@@ -21,6 +23,13 @@ export const BOT_USERNAME = "events_test_bot";
 
 const messages = [];
 let updates = [];
+// Real update_ids only ever increase, and the Worker persists its getUpdates
+// cursor in D1 — which outlives this process, since it sits in the test
+// --persist-to directory. Counting from 1 on each stub start would put new
+// updates *below* a cursor stored by an earlier run, where they are correctly
+// ignored and every linking spec fails for a reason that is not the app's.
+// Seeding from the clock keeps ids ahead of anything previously acknowledged.
+let nextUpdateId = Math.floor(Date.now() / 1000);
 let failuresRemaining = 0;
 let webhookActive = false;
 
@@ -66,8 +75,13 @@ const server = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/__updates" && req.method === "POST") {
-    const chats = (await readBody(req)).chats ?? [];
-    updates = chats.map((chat, i) => ({ update_id: i + 1, message: { message_id: i + 1, chat, text: "/start" } }));
+    const body = await readBody(req);
+    if (body.updates) {
+      // Raw updates, for deep-link payloads and shared contacts.
+      for (const u of body.updates) updates.push({ update_id: nextUpdateId++, message: { message_id: nextUpdateId, ...u } });
+    } else {
+      for (const chat of body.chats ?? []) updates.push({ update_id: nextUpdateId++, message: { message_id: nextUpdateId, chat, text: "/start" } });
+    }
     return json(200, { ok: true, count: updates.length });
   }
 
@@ -91,6 +105,11 @@ const server = createServer(async (req, res) => {
           description: "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first",
         });
       }
+      // Real getUpdates *consumes*: an offset acknowledges everything below it
+      // and those updates are never returned again. The poller depends on that,
+      // so the stub has to honour it rather than replaying the same list.
+      const offset = Number(payload.offset || 0);
+      if (offset) updates = updates.filter(u => u.update_id >= offset);
       return json(200, { ok: true, result: updates });
     }
 

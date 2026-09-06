@@ -49,9 +49,48 @@ CREATE INDEX IF NOT EXISTS idx_reminders_event  ON reminders(event_id);
 
 -- App settings that are a *choice* rather than a credential, so they belong in
 -- the database and can be changed from the UI instead of needing a deploy.
--- Currently: `notify_channel` ('ntfy' | 'telegram' | 'both') and
--- `telegram_chat_id`. The bot token stays a Cloudflare secret.
+-- Currently: `notify_channel` ('ntfy' | 'telegram' | 'both'), `telegram_offset`
+-- (the getUpdates cursor, see below) and the legacy single `telegram_chat_id`,
+-- which is migrated into telegram_recipients on first read. The bot token
+-- stays a Cloudflare secret.
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- Everyone a reminder goes to on Telegram.
+--
+-- A bot cannot open a conversation, and the Bot API cannot address a person by
+-- @username or phone number at all — only by numeric chat_id. So the handle you
+-- type is stored as the *expected* identity and `chat_id` stays NULL until that
+-- person actually starts the bot; only then can anything be sent. They are
+-- matched on arrival by the one-time `link_code` carried in the invite deep
+-- link, or failing that by username, or by the digits of a shared contact.
+CREATE TABLE IF NOT EXISTS telegram_recipients (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,          -- what you call them, for the UI
+  handle        TEXT,                   -- as typed: '@alvita' or '+46701234567'
+  handle_kind   TEXT,                   -- 'username' | 'phone' | NULL
+  handle_digits TEXT,                   -- phone reduced to digits, to match a shared contact
+  chat_id       TEXT,                   -- bound on /start; NULL = invited, not linked yet
+  tg_username   TEXT,                   -- what Telegram actually reported at link time
+  tg_name       TEXT,
+  link_code     TEXT,                   -- one-time deep-link payload, cleared once used
+  linked_at     INTEGER,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_recipients_chat ON telegram_recipients(chat_id) WHERE chat_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_recipients_code ON telegram_recipients(link_code) WHERE link_code IS NOT NULL;
+
+-- Chats that have messaged the bot but aren't a recipient yet, so "who has
+-- started the bot?" survives the getUpdates cursor moving past them. Polling
+-- consumes each update exactly once, so without this the answer would vanish.
+CREATE TABLE IF NOT EXISTS telegram_chats (
+  chat_id  TEXT PRIMARY KEY,
+  name     TEXT NOT NULL,
+  username TEXT,
+  type     TEXT,
+  seen_at  INTEGER NOT NULL
 );

@@ -220,9 +220,45 @@ export async function clearTelegramStub(request: APIRequestContext) {
   await request.delete(`${TELEGRAM_STUB_URL}/__messages`);
 }
 
-/** Seeds the chats the bot's getUpdates will report, as if they had messaged it. */
+/** Queues a plain `/start` from each chat, as if they had tapped Start. */
 export async function seedTelegramChats(request: APIRequestContext, chats: IStubChat[]) {
   await request.post(`${TELEGRAM_STUB_URL}/__updates`, { data: { chats } });
+}
+
+/** Queues raw updates — for deep-link payloads and shared contacts. */
+export async function seedTelegramUpdates(request: APIRequestContext, updates: Record<string, unknown>[]) {
+  await request.post(`${TELEGRAM_STUB_URL}/__updates`, { data: { updates } });
+}
+
+/** Adds a recipient and returns its id. */
+export async function addRecipient(request: APIRequestContext, name: string, handle: string): Promise<string> {
+  const response = await request.post("/api/telegram/recipients", { data: { name, handle } });
+  expect(response.status(), `could not add ${name}: ${await response.text()}`).toBe(200);
+  return (await response.json()).id;
+}
+
+/** Everything the settings endpoint reports about Telegram. */
+export async function telegramSettings(request: APIRequestContext) {
+  const response = await request.get("/api/notify-settings");
+  expect(response.ok()).toBeTruthy();
+  return (await response.json()) as {
+    channel: string;
+    telegram: {
+      tokenSet: boolean;
+      bot: string | null;
+      error: string | null;
+      recipients: { id: string; name: string; handle: string | null; chat_id: string | null; invite: string | null; enabled: number }[];
+      detected: { chat_id: string; name: string }[];
+    };
+  };
+}
+
+/** Removes every recipient, so a spec cannot leak people into the next one. */
+export async function clearRecipients(request: APIRequestContext) {
+  const { telegram } = await telegramSettings(request);
+  for (const person of telegram.recipients) {
+    await request.delete(`/api/telegram/recipients/${person.id}`);
+  }
 }
 
 export async function telegramFailNext(request: APIRequestContext, count = 1) {
@@ -241,7 +277,7 @@ export async function telegramWebhookActive(request: APIRequestContext, active =
  * ntfy stub they assert against.
  */
 export async function resetNotifyChannel(request: APIRequestContext) {
-  const response = await request.put("/api/notify-settings", { data: { channel: "ntfy", telegram_chat_id: "" } });
+  const response = await request.put("/api/notify-settings", { data: { channel: "ntfy" } });
   expect(response.status(), `could not reset the notify channel: ${await response.text()}`).toBe(200);
 }
 

@@ -343,6 +343,165 @@ async function pushTelegram(env, chatId, title, body) {
 }
 
 // ---------------------------------------------------------------------------
+// Telegram recipients.
+//
+// The Bot API can only send to a numeric chat_id — there is no lookup from a
+// @username or a phone number, by design. So adding someone records who you
+// *expect*, and the binding happens when they message the bot: see
+// ingestTelegramUpdates.
+// ---------------------------------------------------------------------------
+
+// "@alvita" -> username, "+46 70 123 45 67" -> phone, anything else rejected.
+// A bare numeric chat id is accepted too, since it can be bound immediately.
+function parseHandle(raw) {
+  const value = (raw || "").trim();
+  if (!value) return { kind: null };
+  if (/^-?\d{5,20}$/.test(value)) return { kind: "chat_id", chatId: value };
+  if (/^@?[A-Za-z][A-Za-z0-9_]{3,31}$/.test(value) && !/^\+/.test(value)) {
+    return { kind: "username", handle: `@${value.replace(/^@/, "")}` };
+  }
+  const digits = value.replace(/\D/g, "");
+  if (/^\+?[\d\s()-]{6,20}$/.test(value) && digits.length >= 6) {
+    return { kind: "phone", handle: value, digits };
+  }
+  return { kind: null };
+}
+
+async function listRecipients(env) {
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT id, name, handle, handle_kind, handle_digits, chat_id, tg_username, tg_name, link_code, linked_at, enabled
+       FROM telegram_recipients ORDER BY created_at`,
+    ).all();
+    return results;
+  } catch {
+    // The table postdates the rest of the schema and migrations do not run on
+    // deploy, so an un-migrated database degrades to "nobody" rather than
+    // failing every reminder.
+    return [];
+  }
+}
+
+// Everyone a message should actually go to right now.
+async function activeRecipients(env) {
+  return (await listRecipients(env)).filter((r) => r.chat_id && r.enabled);
+}
+
+/**
+ * Carries the legacy single `telegram_chat_id` setting into the recipients
+ * table, so upgrading does not silently stop reminders for whoever was already
+ * linked. Runs once: the setting is cleared as it is moved.
+ */
+async function migrateLegacyChatId(env) {
+  const settings = await getSettings(env);
+  const legacy = (settings.telegram_chat_id || "").trim();
+  if (!legacy) return;
+  try {
+    const exists = await env.DB.prepare(`SELECT 1 FROM telegram_recipients WHERE chat_id = ?`).bind(legacy).first();
+    if (!exists) {
+      await env.DB.prepare(
+        `INSERT INTO telegram_recipients (id, name, handle, handle_kind, chat_id, linked_at, created_at)
+         VALUES (?1, ?2, NULL, 'chat_id', ?3, ?4, ?4)`,
+      )
+        .bind(crypto.randomUUID(), "Me", legacy, Math.floor(Date.now() / 1000))
+        .run();
+    }
+    await env.DB.prepare(`DELETE FROM settings WHERE key = 'telegram_chat_id'`).run();
+  } catch {
+    /* un-migrated database; nothing to carry over */
+  }
+}
+
+/**
+ * Polls getUpdates and binds whoever has started the bot to their recipient row.
+ *
+ * Polling rather than a webhook: the cron already runs every minute, getUpdates
+ * delivers exactly the same updates, and it needs no public callback URL and no
+ * webhook secret. The cost is that linking can lag by up to a minute, which
+ * nothing depends on.
+ *
+ * getUpdates *consumes* — acknowledging an update with `offset` means it is
+ * never returned again — so the cursor is persisted, and any chat that isn't a
+ * recipient yet is cached in telegram_chats before it is lost.
+ */
+async function ingestTelegramUpdates(env) {
+  const settings = await getSettings(env);
+  const offset = Number(settings.telegram_offset || 0);
+
+  const updates = await telegramCall(env, "getUpdates", {
+    ...(offset ? { offset } : {}),
+    limit: 100,
+    timeout: 0,
+    allowed_updates: ["message"],
+  });
+  if (!updates.ok) return { ok: false, reason: updates.reason, bound: 0 };
+
+  const rows = updates.result || [];
+  if (!rows.length) return { ok: true, bound: 0, seen: 0 };
+
+  const pending = (await listRecipients(env)).filter((r) => !r.chat_id);
+  const statements = [];
+  const boundIds = new Set();
+  let highest = 0;
+
+  for (const update of rows) {
+    highest = Math.max(highest, update.update_id || 0);
+    const message = update.message;
+    const chat = message?.chat;
+    if (!chat) continue;
+
+    const chatId = String(chat.id);
+    const name = chat.title || [chat.first_name, chat.last_name].filter(Boolean).join(" ") || chat.username || chatId;
+
+    // Which pending recipient is this? The deep-link code is definitive; the
+    // other two are for people who just tapped Start, or shared their number.
+    const startCode = /^\/start\s+(\S+)/.exec(message.text || "")?.[1];
+    const contactDigits = (message.contact?.phone_number || "").replace(/\D/g, "");
+    const username = chat.username ? `@${chat.username}`.toLowerCase() : null;
+
+    const match = pending.find(
+      (r) =>
+        !boundIds.has(r.id) &&
+        ((startCode && r.link_code && r.link_code === startCode) ||
+          (username && r.handle_kind === "username" && (r.handle || "").toLowerCase() === username) ||
+          (contactDigits && r.handle_kind === "phone" && contactDigits.endsWith((r.handle_digits || "___").slice(-9)))),
+    );
+
+    if (match) {
+      boundIds.add(match.id);
+      statements.push(
+        env.DB.prepare(
+          `UPDATE telegram_recipients
+           SET chat_id = ?1, tg_username = ?2, tg_name = ?3, link_code = NULL, linked_at = ?4
+           WHERE id = ?5`,
+        ).bind(chatId, chat.username || null, name, Math.floor(Date.now() / 1000), match.id),
+      );
+    } else {
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO telegram_chats (chat_id, name, username, type, seen_at) VALUES (?1,?2,?3,?4,?5)
+           ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name, username = excluded.username, seen_at = excluded.seen_at`,
+        ).bind(chatId, name, chat.username || null, chat.type || null, Math.floor(Date.now() / 1000)),
+      );
+    }
+  }
+
+  // Acknowledge past the highest update seen, so the same ones are not
+  // reprocessed. Written last, and only if the writes above succeeded.
+  if (highest) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO settings (key, value) VALUES ('telegram_offset', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      ).bind(String(highest + 1)),
+    );
+  }
+  if (statements.length) await env.DB.batch(statements);
+
+  return { ok: true, bound: boundIds.size, seen: rows.length };
+}
+
+// ---------------------------------------------------------------------------
 // Which channel(s) a reminder goes to. This is a preference rather than a
 // credential, so it lives in the database and is switchable from the app —
 // the point being that when one channel is having a bad day (a sleeping
@@ -351,7 +510,9 @@ async function pushTelegram(env, chatId, title, body) {
 // ---------------------------------------------------------------------------
 
 const NOTIFY_CHANNELS = ["ntfy", "telegram", "both"];
-const DEFAULT_SETTINGS = { notify_channel: "ntfy", telegram_chat_id: "" };
+// telegram_chat_id is the retired single-recipient setting, kept here only so
+// migrateLegacyChatId can find and move it. telegram_offset is the getUpdates cursor.
+const DEFAULT_SETTINGS = { notify_channel: "ntfy", telegram_chat_id: "", telegram_offset: "0" };
 
 async function getSettings(env) {
   try {
@@ -367,18 +528,27 @@ async function getSettings(env) {
 
 // Sends one reminder to every configured channel. `settings` is passed in by
 // the cron so a batch of due reminders costs one settings read, not fifty.
-async function deliverPush(env, body, settings) {
+async function deliverPush(env, body, settings, recipients) {
   const s = settings || (await getSettings(env));
   const channel = NOTIFY_CHANNELS.includes(s.notify_channel) ? s.notify_channel : "ntfy";
 
-  // Fired in parallel: on "both" the cron would otherwise pay two round trips
-  // per reminder, and it works through up to fifty of them in one tick.
+  // Fired in parallel: on "both", and with several people on Telegram, the
+  // cron would otherwise pay a round trip each, for up to fifty reminders in
+  // one tick.
   const sending = [];
   if (channel === "ntfy" || channel === "both") {
     sending.push(pushNtfy(env, body).then((r) => ({ name: "ntfy", ...r })));
   }
   if (channel === "telegram" || channel === "both") {
-    sending.push(pushTelegram(env, s.telegram_chat_id, "Coming up", body).then((r) => ({ name: "telegram", ...r })));
+    const people = recipients || (await activeRecipients(env));
+    if (!people.length) {
+      sending.push(Promise.resolve({ name: "telegram", ok: false, reason: "nobody is linked yet." }));
+    }
+    for (const person of people) {
+      sending.push(
+        pushTelegram(env, person.chat_id, "Coming up", body).then((r) => ({ name: `telegram/${person.name}`, ...r })),
+      );
+    }
   }
   const attempts = await Promise.all(sending);
 
@@ -883,18 +1053,35 @@ export default {
     // -----------------------------------------------------------------------
 
     if (path === "/api/notify-settings" && request.method === "GET") {
+      await migrateLegacyChatId(env);
       const s = await getSettings(env);
-      // getMe both proves the token works and gives the @username to show, so
-      // "is Telegram actually set up?" is answered by Telegram, not by guessing
-      // from whether a secret happens to be non-empty.
+      // getMe both proves the token works and gives the @username the invite
+      // links are built from, so "is Telegram actually set up?" is answered by
+      // Telegram rather than guessed from a secret being non-empty.
       const me = env.TELEGRAM_BOT_TOKEN ? await telegramCall(env, "getMe") : { ok: false, reason: "TELEGRAM_BOT_TOKEN is not set." };
+      const bot = me.ok ? me.result?.username || null : null;
+      const recipients = (await listRecipients(env)).map((r) => ({
+        ...r,
+        // A bot cannot message someone first, so an unlinked person gets a
+        // deep link to open; tapping Start in it sends us their link_code.
+        invite: !r.chat_id && r.link_code && bot ? `https://t.me/${bot}?start=${r.link_code}` : null,
+      }));
+
+      let detected = [];
+      try {
+        detected = (await env.DB.prepare(`SELECT chat_id, name, username, type FROM telegram_chats ORDER BY seen_at DESC LIMIT 20`).all()).results;
+      } catch {
+        /* un-migrated database */
+      }
+
       return json({
         channel: NOTIFY_CHANNELS.includes(s.notify_channel) ? s.notify_channel : "ntfy",
         telegram: {
           tokenSet: Boolean(env.TELEGRAM_BOT_TOKEN),
-          chatId: s.telegram_chat_id,
-          bot: me.ok ? me.result?.username || null : null,
+          bot,
           error: me.ok ? null : me.reason,
+          recipients,
+          detected,
         },
       });
     }
@@ -912,81 +1099,144 @@ export default {
         return json({ error: "Channel must be ntfy, telegram or both." }, 400);
       }
 
-      // Numeric for a private chat or group, @name for a channel. Anything
-      // else is a typo, and a typo here silently stops reminders arriving.
-      const chatId = clean(body.telegram_chat_id, 64) || "";
-      if (chatId && !/^-?\d{1,20}$/.test(chatId) && !/^@[A-Za-z0-9_]{4,32}$/.test(chatId)) {
-        return json({ error: "Chat ID must be a number, or @name for a channel." }, 400);
-      }
-
       // Refuse to arm a channel that cannot deliver. Saving this and finding
       // out at 07:00 that the reminder went nowhere is the failure worth
       // designing against.
       if (channel !== "ntfy") {
         if (!env.TELEGRAM_BOT_TOKEN) return json({ error: "Set the TELEGRAM_BOT_TOKEN secret first." }, 400);
-        if (!chatId) return json({ error: "Link a Telegram chat first." }, 400);
+        if (!(await activeRecipients(env)).length) {
+          return json({ error: "Add someone and wait for them to start the bot first." }, 400);
+        }
       }
 
-      await env.DB.batch([
-        env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('notify_channel', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(channel),
-        env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('telegram_chat_id', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(chatId),
-      ]);
-
-      return json({ ok: true, channel, telegram_chat_id: chatId });
+      await env.DB.prepare(
+        `INSERT INTO settings (key, value) VALUES ('notify_channel', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+        .bind(channel)
+        .run();
+      return json({ ok: true, channel });
     }
 
-    // A bot cannot message someone first, so the chat ID can only be learned
-    // after the user has sent the bot something. getUpdates is enough for
-    // that and needs no webhook, no public callback URL and no secret token —
-    // the whole registration dance the task app needs is unnecessary here.
-    if (path === "/api/telegram/discover" && request.method === "POST") {
-      const updates = await telegramCall(env, "getUpdates", { limit: 100, allowed_updates: ["message"] });
-      if (!updates.ok) {
+    // -----------------------------------------------------------------------
+    // Who reminders go to on Telegram.
+    // -----------------------------------------------------------------------
+
+    if (path === "/api/telegram/recipients" && request.method === "POST") {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "Malformed request." }, 400);
+      }
+
+      const name = clean(body.name, 60);
+      if (!name) return json({ error: "A name is required." }, 400);
+
+      const parsed = parseHandle(clean(body.handle, 64) || "");
+      if (!parsed.kind) {
+        return json({ error: "Enter a @username, a phone number, or a numeric chat ID." }, 400);
+      }
+
+      const id = crypto.randomUUID();
+      const now = Math.floor(Date.now() / 1000);
+
+      // A numeric chat id needs no linking — it is already the thing the Bot
+      // API wants — so it binds immediately. The other two have to wait for
+      // that person to message the bot.
+      if (parsed.kind === "chat_id") {
+        await env.DB.prepare(
+          `INSERT INTO telegram_recipients (id, name, handle, handle_kind, chat_id, linked_at, created_at)
+           VALUES (?1,?2,?3,'chat_id',?4,?5,?5)`,
+        )
+          .bind(id, name, parsed.chatId, parsed.chatId, now)
+          .run();
+      } else {
+        // Unguessable, and one-time: it is cleared the moment it is redeemed,
+        // so a forwarded invite link cannot bind a second person.
+        const linkCode = crypto.randomUUID().replace(/-/g, "").slice(0, 20);
+        await env.DB.prepare(
+          `INSERT INTO telegram_recipients (id, name, handle, handle_kind, handle_digits, link_code, created_at)
+           VALUES (?1,?2,?3,?4,?5,?6,?7)`,
+        )
+          .bind(id, name, parsed.handle, parsed.kind, parsed.digits || null, linkCode, now)
+          .run();
+      }
+
+      return json({ ok: true, id });
+    }
+
+    const recipientMatch = path.match(/^\/api\/telegram\/recipients\/([0-9a-f-]{36})$/);
+
+    if (recipientMatch && request.method === "DELETE") {
+      await env.DB.prepare(`DELETE FROM telegram_recipients WHERE id = ?`).bind(recipientMatch[1]).run();
+      return json({ ok: true });
+    }
+
+    if (recipientMatch && request.method === "PATCH") {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "Malformed request." }, 400);
+      }
+      const enabled = toBool(body.enabled, true) ? 1 : 0;
+      await env.DB.prepare(`UPDATE telegram_recipients SET enabled = ?1 WHERE id = ?2`).bind(enabled, recipientMatch[1]).run();
+      return json({ ok: true, enabled: Boolean(enabled) });
+    }
+
+    // Checks for people who have started the bot since the last poll. The cron
+    // does this every minute anyway; this is the "I just tapped it, don't make
+    // me wait" button.
+    if (path === "/api/telegram/poll" && request.method === "POST") {
+      const result = await ingestTelegramUpdates(env);
+      if (!result.ok) {
         // Telegram lets a bot use a webhook or getUpdates, never both. Hitting
         // this means the token belongs to a bot some *other* app is driving,
         // which its own wording does not make obvious — and the tempting fix,
         // deleteWebhook, would silently break that other app.
-        if (/webhook is active|Conflict/i.test(updates.reason)) {
+        if (/webhook is active|Conflict/i.test(result.reason)) {
           const me = await telegramCall(env, "getMe");
           const who = me.ok && me.result?.username ? `@${me.result.username}` : "this bot";
           return json(
             {
               error:
                 `${who} already has a webhook registered, so another app is using this token. ` +
-                `Create a separate bot for the calendar with @BotFather, or type your chat ID in by hand below. ` +
+                `Create a separate bot for the calendar with @BotFather, or add someone by their numeric chat ID. ` +
                 `Do not delete that webhook — it would break whatever app registered it.`,
             },
             409,
           );
         }
-        return json({ error: updates.reason }, 502);
+        return json({ error: result.reason }, 502);
       }
-
-      const chats = new Map();
-      for (const update of updates.result || []) {
-        const chat = update.message?.chat || update.my_chat_member?.chat;
-        if (!chat) continue;
-        const name = chat.title || [chat.first_name, chat.last_name].filter(Boolean).join(" ") || chat.username || String(chat.id);
-        chats.set(String(chat.id), { id: String(chat.id), name, type: chat.type });
-      }
-      return json({ chats: [...chats.values()] });
+      return json({ ok: true, bound: result.bound });
     }
 
-    // Proves the bot can actually reach the chat, before it is trusted with a
-    // real reminder. Deliberately independent of the selected channel — you
+    // Proves the bot can actually reach someone, before they are trusted with
+    // a real reminder. Deliberately independent of the selected channel — you
     // want to test Telegram *before* switching reminders over to it.
     if (path === "/api/telegram/test" && request.method === "POST") {
       let body = {};
       try {
         body = await request.json();
       } catch {
-        /* an empty body is fine — fall back to the saved chat */
+        /* an empty body means "everyone who is linked" */
       }
-      const s = await getSettings(env);
-      const chatId = clean(body.telegram_chat_id, 64) || s.telegram_chat_id;
-      const push = await pushTelegram(env, chatId, "Coming up", "Test message from your calendar.");
-      if (!push.ok) return json({ error: push.reason }, 502);
-      return json({ ok: true });
+
+      const id = clean(body.id, 36);
+      const people = (await activeRecipients(env)).filter((r) => !id || r.id === id);
+      if (!people.length) return json({ error: "Nobody is linked yet." }, 400);
+
+      const results = await Promise.all(
+        people.map((person) =>
+          pushTelegram(env, person.chat_id, "Coming up", "Test message from your calendar.").then((r) => ({ name: person.name, ...r })),
+        ),
+      );
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length === results.length) {
+        return json({ error: failed.map((r) => `${r.name}: ${r.reason}`).join("; ") }, 502);
+      }
+      return json({ ok: true, sent: results.length - failed.length, failed: failed.map((r) => `${r.name}: ${r.reason}`) });
     }
 
     if (path === "/api/upcoming" && request.method === "GET") {
@@ -1070,11 +1320,12 @@ export default {
       .bind(now, now - 3600)
       .all();
 
-    // One settings read for the whole batch, not one per reminder.
+    // One settings and recipients read for the whole batch, not one per reminder.
     const settings = dueReminders.length ? await getSettings(env) : null;
+    const recipients = dueReminders.length ? await activeRecipients(env) : null;
 
     for (const rem of dueReminders) {
-      const push = await deliverPush(env, rem.all_day ? rem.title : `${rem.start_time} — ${rem.title}`, settings);
+      const push = await deliverPush(env, rem.all_day ? rem.title : `${rem.start_time} — ${rem.title}`, settings, recipients);
       await env.DB.prepare(
         push.ok
           ? `UPDATE reminders SET notified_at = ?1, last_error = NULL WHERE id = ?2`
@@ -1112,6 +1363,13 @@ export default {
         const inserts = dailyReminderInserts(env, ev.id, occurrence, times, tz);
         if (inserts.length) await env.DB.batch(inserts);
       }
+    }
+
+    // Bind anyone who has started the bot since the last tick. Only worth a
+    // call when somebody is actually waiting to be linked.
+    if (env.TELEGRAM_BOT_TOKEN) {
+      const pending = (await listRecipients(env)).some((r) => !r.chat_id);
+      if (pending) await ingestTelegramUpdates(env);
     }
 
     // Housekeeping: expired lockout rows, and reminders too old to still be

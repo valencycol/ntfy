@@ -7,6 +7,7 @@
     "build:web": "npm --prefix webapp run build",
     "deploy": "npm run build:web && npm test && wrangler deploy",
     "dev": "npm run build:web && wrangler dev",
+    "pretest": "rm -rf .wrangler/test-state",
     "test": "playwright test",
     "test:api": "playwright test --project=api",
     "test:ui": "playwright test --project=ui",
