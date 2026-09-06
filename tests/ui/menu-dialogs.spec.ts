@@ -130,6 +130,9 @@ test.describe("iPhone setup dialog", () => {
       await resetNotifyChannel(api);
       await clearRecipients(api);
       await clearTelegramStub(api);
+      // These specs send test pushes down both channels, so the ntfy log has
+      // to be cleared as well or the next one counts this one's.
+      await clearStub(api);
     });
 
     test("names the bot the token belongs to", async ({ page }) => {
@@ -209,9 +212,6 @@ test.describe("iPhone setup dialog", () => {
       await expect(page.getByText("Sent — check Telegram.")).toBeVisible();
       expect(await telegramMessages(api)).toHaveLength(1);
 
-      await dialog.getByRole("button", { name: "Mute Me" }).click();
-      await expect(page.getByText("Me muted.")).toBeVisible();
-
       await dialog.getByRole("button", { name: "Remove Me" }).click();
       await expect(page.getByText("Nobody yet.")).toBeVisible();
     });
@@ -234,24 +234,94 @@ test.describe("iPhone setup dialog", () => {
       await expect(copied).toBeDisabled();
     });
 
-    test("Send test is offered once somebody is linked, and not before", async ({ page, api }) => {
+    test("Send test follows the channel rather than always using Telegram", async ({ page, api }) => {
       await unlock(page);
       await openMenu(page, "iPhone setup");
-
-      // Nobody linked: the button is there but cannot fire into the void.
-      const sendTest = page.getByRole("dialog").getByRole("button", { name: "Send test" });
-      await expect(sendTest).toBeDisabled();
 
       await page.getByLabel("Name", { exact: true }).fill("Me");
       await page.getByLabel("@username or phone").fill("987654321");
       await page.getByRole("button", { name: "Add", exact: true }).click();
       await expect(page.getByRole("dialog").getByText("Me", { exact: true })).toBeVisible();
 
-      await expect(sendTest).toBeEnabled();
-      await sendTest.click();
-      await expect(page.getByText("Sent — check Telegram.")).toBeVisible();
+      // The dropdown still reads "ntfy only", so the test must go to ntfy.
+      await page.getByRole("dialog").getByRole("button", { name: "Send test" }).click();
+      await expect(page.getByText("Sent to ntfy.")).toBeVisible();
 
+      expect(await stubPushes(api)).toHaveLength(1);
+      expect(await telegramMessages(api)).toHaveLength(0);
+    });
+
+    test("switching the dropdown to Both sends the test to both", async ({ page, api }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Name", { exact: true }).fill("Me");
+      await page.getByLabel("@username or phone").fill("987654321");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await expect(page.getByRole("dialog").getByText("Me", { exact: true })).toBeVisible();
+
+      await page.getByLabel("Send reminders to").click();
+      await page.getByRole("option", { name: "Both" }).click();
+
+      // Not saved yet: the button still has to match what is on screen.
+      await page.getByRole("dialog").getByRole("button", { name: "Send test" }).click();
+      await expect(page.getByText("Sent to ntfy and Telegram.")).toBeVisible();
+
+      expect(await stubPushes(api)).toHaveLength(1);
       expect(await telegramMessages(api)).toHaveLength(1);
+    });
+
+    test("each linked person has a checkbox, and the last one cannot be cleared", async ({ page }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      await page.getByLabel("Name", { exact: true }).fill("Me");
+      await page.getByLabel("@username or phone").fill("987654321");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+
+      const mine = page.getByRole("checkbox", { name: "Include Me" });
+      await expect(mine).toBeChecked();
+      // Sole selection: clearing it would leave Telegram reaching nobody.
+      await expect(mine).toBeDisabled();
+
+      await page.getByLabel("Name", { exact: true }).fill("Alvita");
+      await page.getByLabel("@username or phone").fill("555001400");
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+
+      const hers = page.getByRole("checkbox", { name: "Include Alvita" });
+      await expect(hers).toBeEnabled();
+      await expect(mine).toBeEnabled();
+
+      await hers.click();
+      await expect(hers).not.toBeChecked();
+      // Me is now the only one selected, so it pins again.
+      await expect(mine).toBeDisabled();
+    });
+
+    test("only the checked people receive, on Both", async ({ page, api }) => {
+      await unlock(page);
+      await openMenu(page, "iPhone setup");
+
+      for (const [name, chatId] of [["Me", "987654321"], ["Alvita", "555001500"]]) {
+        await page.getByLabel("Name", { exact: true }).fill(name);
+        await page.getByLabel("@username or phone").fill(chatId);
+        await page.getByRole("button", { name: "Add", exact: true }).click();
+        await expect(page.getByRole("dialog").getByText(name, { exact: true })).toBeVisible();
+      }
+
+      await page.getByRole("checkbox", { name: "Include Alvita" }).click();
+      await expect(page.getByRole("checkbox", { name: "Include Alvita" })).not.toBeChecked();
+
+      await page.getByLabel("Send reminders to").click();
+      await page.getByRole("option", { name: "Both" }).click();
+      await page.getByRole("dialog").getByRole("button", { name: "Send test" }).click();
+      await expect(page.getByText("Sent to ntfy and Telegram.")).toBeVisible();
+
+      // ntfy always, but only the checked person on Telegram.
+      expect(await stubPushes(api)).toHaveLength(1);
+      const messages = await telegramMessages(api);
+      expect(messages).toHaveLength(1);
+      expect(messages[0].chat_id).toBe("987654321");
     });
 
     test("switching to Telegram is refused while nobody is linked", async ({ page }) => {

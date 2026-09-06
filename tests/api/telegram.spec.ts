@@ -197,9 +197,41 @@ test.describe("Telegram recipients", () => {
       expect(await telegramMessages(api)).toHaveLength(1);
     });
 
+    test("the last selected person cannot be unselected", async ({ api }) => {
+      const meId = await addRecipient(api, "Me", CHAT_ID);
+
+      const response = await api.patch(`/api/telegram/recipients/${meId}`, { data: { enabled: false } });
+      expect(response.status()).toBe(400);
+      expect((await response.json()).error).toMatch(/at least one person/i);
+
+      // Still selected, so Telegram cannot end up reaching nobody.
+      expect((await telegramSettings(api)).telegram.recipients[0].enabled).toBe(1);
+    });
+
+    test("unselecting is allowed while somebody else is still selected", async ({ api }) => {
+      const meId = await addRecipient(api, "Me", CHAT_ID);
+      await addRecipient(api, "Alvita", "555001300");
+
+      expect((await api.patch(`/api/telegram/recipients/${meId}`, { data: { enabled: false } })).status()).toBe(200);
+
+      // ...and now Alvita is the last one, so she is pinned in turn.
+      const { telegram } = await telegramSettings(api);
+      const alvita = telegram.recipients.find(r => r.name === "Alvita")!;
+      expect((await api.patch(`/api/telegram/recipients/${alvita.id}`, { data: { enabled: false } })).status()).toBe(400);
+    });
+
+    test("a person who is pending does not count as selected", async ({ api }) => {
+      const meId = await addRecipient(api, "Me", CHAT_ID);
+      await addRecipient(api, "Alvita", "@alvita"); // invited, never linked
+
+      // Alvita cannot receive anything, so unselecting Me would empty it.
+      const response = await api.patch(`/api/telegram/recipients/${meId}`, { data: { enabled: false } });
+      expect(response.status()).toBe(400);
+    });
+
     test("a disabled person is skipped without being deleted", async ({ api }) => {
       const meId = await addRecipient(api, "Me", CHAT_ID);
-      await addRecipient(api, "Alvita", "555000888");
+      await addRecipient(api, "Alvita", "555000888"); // the one that stays selected
       await api.put("/api/notify-settings", { data: { channel: "telegram" } });
 
       expect((await api.patch(`/api/telegram/recipients/${meId}`, { data: { enabled: false } })).status()).toBe(200);
@@ -270,9 +302,60 @@ test.describe("Telegram recipients", () => {
       expect((await api.put("/api/notify-settings", { data: { channel: "carrier-pigeon" } })).status()).toBe(400);
     });
 
-    test("the test message goes to Telegram whatever the channel is set to", async ({ api }) => {
+    // The button sits directly under the channel dropdown, so it must never
+    // contradict it — sending to Telegram while it reads "ntfy only" is a bug.
+    test.describe("the test message follows the channel", () => {
+      test("ntfy only goes to ntfy and nowhere else", async ({ api }) => {
+        await addRecipient(api, "Me", CHAT_ID);
+        await api.put("/api/notify-settings", { data: { channel: "ntfy" } });
+
+        expect((await api.post("/api/notify/test", { data: {} })).status()).toBe(200);
+
+        expect(await stubPushes(api)).toHaveLength(1);
+        expect(await telegramMessages(api)).toHaveLength(0);
+      });
+
+      test("Telegram only goes to Telegram and nowhere else", async ({ api }) => {
+        await addRecipient(api, "Me", CHAT_ID);
+        await api.put("/api/notify-settings", { data: { channel: "telegram" } });
+
+        expect((await api.post("/api/notify/test", { data: {} })).status()).toBe(200);
+
+        expect(await telegramMessages(api)).toHaveLength(1);
+        expect(await stubPushes(api)).toHaveLength(0);
+      });
+
+      test("Both goes to ntfy and to every linked person", async ({ api }) => {
+        await addRecipient(api, "Me", CHAT_ID);
+        await addRecipient(api, "Alvita", "555002000");
+        await api.put("/api/notify-settings", { data: { channel: "both" } });
+
+        expect((await api.post("/api/notify/test", { data: {} })).status()).toBe(200);
+
+        expect(await stubPushes(api)).toHaveLength(1);
+        expect(await telegramMessages(api)).toHaveLength(2);
+      });
+
+      test("an unsaved selection is honoured, so the button matches the dropdown", async ({ api }) => {
+        await addRecipient(api, "Me", CHAT_ID);
+        // Saved channel is still ntfy; the dialog asks for telegram.
+        expect((await api.post("/api/notify/test", { data: { channel: "telegram" } })).status()).toBe(200);
+
+        expect(await telegramMessages(api)).toHaveLength(1);
+        expect(await stubPushes(api)).toHaveLength(0);
+        // ...and testing did not quietly change what is saved.
+        expect((await telegramSettings(api)).channel).toBe("ntfy");
+      });
+
+      test("an unknown channel override is refused", async ({ api }) => {
+        expect((await api.post("/api/notify/test", { data: { channel: "smoke-signal" } })).status()).toBe(400);
+      });
+    });
+
+    test("the per-person test goes to Telegram whatever the channel is set to", async ({ api }) => {
       await addRecipient(api, "Me", CHAT_ID);
 
+      // Channel is ntfy, but checking a person is about Telegram specifically.
       const response = await api.post("/api/telegram/test", { data: {} });
       expect(response.status(), await response.text()).toBe(200);
 

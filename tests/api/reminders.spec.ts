@@ -105,13 +105,20 @@ test.describe("reminders and ntfy delivery", () => {
     await addReminderViaApi(api, "Dentist", -1);
     await clearStub(api);
 
+    // Counted per title, not as a total: the fixtures include a yearly event
+    // that legitimately comes due on its own date, and this test is about
+    // these two reminders not going out twice — not about how quiet the day is.
+    const timesSent = async (title: string) =>
+      (await stubPushes(api)).filter(push => JSON.stringify(push.body).includes(title)).length;
+
     expect((await api.get(SCHEDULED_URL)).status()).toBe(200);
-    await expect.poll(async () => (await stubPushes(api)).length, { timeout: 15_000 }).toBe(2);
+    await expect.poll(async () => (await timesSent("Standup")) + (await timesSent("Dentist")), { timeout: 15_000 }).toBe(2);
 
     // A second tick must not re-send what already went out.
     expect((await api.get(SCHEDULED_URL)).status()).toBe(200);
     await new Promise(resolve => setTimeout(resolve, 2000));
-    expect(await stubPushes(api)).toHaveLength(2);
+    expect(await timesSent("Standup")).toBe(1);
+    expect(await timesSent("Dentist")).toBe(1);
 
     const sent = query<{ n: number }>("SELECT COUNT(*) AS n FROM reminders WHERE notified_at IS NOT NULL");
     expect(sent[0].n).toBeGreaterThanOrEqual(2);

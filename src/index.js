@@ -1180,6 +1180,18 @@ export default {
         return json({ error: "Malformed request." }, 400);
       }
       const enabled = toBool(body.enabled, true) ? 1 : 0;
+
+      // At least one linked person stays selected. "Telegram" with nobody
+      // selected is a channel that silently reaches no one, which is exactly
+      // the failure the channel guard elsewhere exists to prevent — turning
+      // Telegram off is what the channel dropdown is for.
+      if (!enabled) {
+        const others = (await activeRecipients(env)).filter((r) => r.id !== recipientMatch[1]);
+        if (!others.length) {
+          return json({ error: "At least one person must be selected. Switch the channel instead to stop Telegram." }, 400);
+        }
+      }
+
       await env.DB.prepare(`UPDATE telegram_recipients SET enabled = ?1 WHERE id = ?2`).bind(enabled, recipientMatch[1]).run();
       return json({ ok: true, enabled: Boolean(enabled) });
     }
@@ -1212,9 +1224,30 @@ export default {
       return json({ ok: true, bound: result.bound });
     }
 
-    // Proves the bot can actually reach someone, before they are trusted with
-    // a real reminder. Deliberately independent of the selected channel — you
-    // want to test Telegram *before* switching reminders over to it.
+    // Sends a test the same way a real reminder would go out. `channel` lets
+    // the dialog test what is *selected* rather than what was last saved, so
+    // the button never contradicts the dropdown directly above it.
+    if (path === "/api/notify/test" && request.method === "POST") {
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {
+        /* no body means "whatever is saved" */
+      }
+      const override = clean(body.channel, 20);
+      if (override && !NOTIFY_CHANNELS.includes(override)) {
+        return json({ error: "Channel must be ntfy, telegram or both." }, 400);
+      }
+
+      const saved = await getSettings(env);
+      const channel = override || saved.notify_channel;
+      const push = await deliverPush(env, "Test message from your calendar.", { ...saved, notify_channel: channel });
+      if (!push.ok) return json({ error: push.reason }, 502);
+      return json({ ok: true, channel });
+    }
+
+    // Reaches one person on Telegram regardless of the channel — for checking
+    // somebody has linked correctly before reminders are switched over.
     if (path === "/api/telegram/test" && request.method === "POST") {
       let body = {};
       try {

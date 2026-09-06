@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Bell, BellOff, Check, Copy, Link2, RefreshCw, Send, Trash2, UserPlus } from "lucide-react";
+import { AlertTriangle, Check, Copy, Link2, RefreshCw, Send, Trash2, UserPlus } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -167,10 +167,18 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
       return "Saved.";
     });
 
-  const sendTest = (id?: string) =>
+  /** Tests one person on Telegram, for checking they linked correctly. */
+  const testPerson = (id: string) =>
     run("Sending…", async () => {
-      await api("/api/telegram/test", { method: "POST", body: JSON.stringify(id ? { id } : {}) });
+      await api("/api/telegram/test", { method: "POST", body: JSON.stringify({ id }) });
       return "Sent — check Telegram.";
+    });
+
+  /** Tests the way a real reminder goes out, down whichever channel is picked. */
+  const sendTest = () =>
+    run("Sending…", async () => {
+      await api("/api/notify/test", { method: "POST", body: JSON.stringify({ channel }) });
+      return channel === "ntfy" ? "Sent to ntfy." : channel === "telegram" ? "Sent to Telegram." : "Sent to ntfy and Telegram.";
     });
 
   const copyInvite = async (id: string, invite: string) => {
@@ -184,6 +192,8 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
       setTelegramState(invite);
     }
   };
+
+  const checkedCount = (settings?.telegram.recipients ?? []).filter(r => r.chat_id && r.enabled).length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -263,6 +273,21 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
 
                     {settings?.telegram.recipients.map(person => (
                       <li key={person.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                        {person.chat_id && (
+                          <input
+                            type="checkbox"
+                            className="size-4 shrink-0 accent-primary"
+                            checked={Boolean(person.enabled)}
+                            // The last one cannot be unchecked: "Telegram" with nobody
+                            // selected is a channel that silently reaches no one. Turn
+                            // Telegram off with the dropdown instead.
+                            disabled={busy || (Boolean(person.enabled) && checkedCount === 1)}
+                            title={Boolean(person.enabled) && checkedCount === 1 ? "At least one person must be selected." : undefined}
+                            aria-label={`Include ${person.name}`}
+                            onChange={() => toggleRecipient(person)}
+                          />
+                        )}
+
                         <div className="min-w-0 flex-1">
                           <p className={cn("truncate text-sm font-medium", !person.enabled && "text-muted-foreground line-through")}>{person.name}</p>
                           <p className="truncate text-xs text-muted-foreground">
@@ -289,22 +314,10 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
                         )}
 
                         {person.chat_id && (
-                          <>
-                            <Button type="button" size="sm" variant="outline" onClick={() => sendTest(person.id)} disabled={busy}>
+                          <Button type="button" size="sm" variant="outline" onClick={() => testPerson(person.id)} disabled={busy}>
                               <Send className="size-3.5" />
                               Test
                             </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => toggleRecipient(person)}
-                              disabled={busy}
-                              aria-label={person.enabled ? `Mute ${person.name}` : `Unmute ${person.name}`}
-                            >
-                              {person.enabled ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
-                            </Button>
-                          </>
                         )}
 
                         <Button
@@ -365,8 +378,8 @@ export function SetupDialog({ open, onOpenChange }: { open: boolean; onOpenChang
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() => sendTest()}
-                      disabled={busy || !settings?.telegram.recipients.some(r => r.chat_id && r.enabled)}
+                      onClick={sendTest}
+                      disabled={busy || (channel === "telegram" && !settings?.telegram.recipients.some(r => r.chat_id && r.enabled))}
                     >
                       <Send className="size-4" />
                       Send test
