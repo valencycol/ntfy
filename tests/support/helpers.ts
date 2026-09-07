@@ -1,25 +1,72 @@
-import { execFileSync } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { expect } from "@playwright/test";
 
 import { NTFY_STUB_URL, TELEGRAM_STUB_URL, TEST_PATTERN, TEST_SUPERUSER_PHRASE, TEST_TZ } from "../../playwright.config";
 
 import type { APIRequestContext, Page } from "@playwright/test";
 
-const D1_ARGS = ["wrangler", "d1", "execute", "events", "--local", "--persist-to", ".wrangler/test-state"];
+/**
+ * Miniflare keeps a D1 database as an ordinary SQLite file, so specs read and
+ * write it directly.
+ *
+ * These used to shell out to `wrangler d1 execute --local`, which boots a
+ * *second* Miniflare against the same --persist-to directory that the running
+ * `wrangler dev` already holds open. Sixty of those per run made the dev server
+ * die partway through often enough to fail roughly half of all full runs, always
+ * as a wall of ECONNREFUSED that looked like the app breaking. Opening the file
+ * costs microseconds instead of a process launch, and takes minutes off the run.
+ */
+const D1_DIR = ".wrangler/test-state/v3/d1/miniflare-D1DatabaseObject";
 
-/** Runs SQL against the test D1. Throws with wrangler's own output on failure. */
+function d1Path(): string {
+  let files: string[];
+  try {
+    // The database is named for its id; `metadata.sqlite` alongside it is
+    // Miniflare's own alarm store and must not be matched.
+    files = readdirSync(D1_DIR).filter(name => /^[0-9a-f]{64}\.sqlite$/.test(name));
+  } catch {
+    throw new Error(`No test database yet at ${D1_DIR}. Playwright's globalSetup creates it — run via "npm test".`);
+  }
+  if (files.length !== 1) {
+    throw new Error(`Expected one D1 database in ${D1_DIR}, found ${files.length}. Wipe .wrangler/test-state and re-run.`);
+  }
+  return join(D1_DIR, files[0]);
+}
+
+/**
+ * Opened and closed per call rather than held: a long-lived handle would keep a
+ * lock across a whole spec, competing with the Worker for the same file.
+ * `readOnly` on reads so an assertion can never mutate the database it checks.
+ */
+function withDb<T>(readOnly: boolean, use: (db: DatabaseSync) => T): T {
+  // SQLITE_BUSY is possible while the Worker is mid-write; it clears in
+  // milliseconds, so a short retry is cheaper than making every caller care.
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let db: DatabaseSync | undefined;
+    try {
+      db = new DatabaseSync(d1Path(), { readOnly });
+      return use(db);
+    } catch (error) {
+      lastError = error;
+      if (!/busy|locked/i.test(String(error))) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    } finally {
+      db?.close();
+    }
+  }
+  throw lastError;
+}
+
+/** Runs a statement against the test D1. */
 export function sql(statement: string) {
-  return execFileSync("npx", [...D1_ARGS, "--command", statement, "--json"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  withDb(false, db => db.exec(statement));
 }
 
 export function query<T = Record<string, unknown>>(statement: string): T[] {
-  const raw = sql(statement);
-  // wrangler prints a banner before the JSON; take from the first bracket.
-  const parsed = JSON.parse(raw.slice(raw.indexOf("[")));
-  return parsed[0]?.results ?? [];
+  return withDb(true, db => db.prepare(statement).all() as T[]);
 }
 
 /**
@@ -29,10 +76,9 @@ export function query<T = Record<string, unknown>>(statement: string): T[] {
  */
 export function reseed() {
   try {
-    execFileSync("npx", [...D1_ARGS, "--file", "tests/seed.sql"], { stdio: ["ignore", "ignore", "pipe"] });
+    sql(readFileSync("tests/seed.sql", "utf8"));
   } catch (error) {
-    const stderr = error instanceof Error && "stderr" in error ? String((error as { stderr: unknown }).stderr) : String(error);
-    throw new Error(`reseed failed to run:\n${stderr}`);
+    throw new Error(`reseed failed to run:\n${error instanceof Error ? error.message : String(error)}`);
   }
 
   const rows = query<{ n: number; titles: string }>(
